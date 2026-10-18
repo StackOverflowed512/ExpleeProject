@@ -29,17 +29,59 @@ that need them; Phase 0 creates no empty feature modules.
 
 ## P1 — Explorer: discovery
 
-**Scope:** `SearchProvider` protocol and one real adapter; company candidate
-model and first migration; discovery endpoint/service; provider selection
-through settings.
+**Scope:** `SearchProvider` protocol and Brave Search adapter; fake provider;
+`company_candidates` model and first migration; discovery service with
+normalization, deduplication, and provenance-preserving persistence;
+`POST /discovery/search`; provider configuration and failure mapping.
+
+**Implementation notes (2026-10-18)**
+
+- Provider contract: `app/services/providers/search.py`; adapters
+  `brave.py` and `fake.py`; selected by `SEARCH_PROVIDER` (`fake` default).
+- Brave adapter reads only documented fields (`title`, `url`,
+  `description`), skips malformed individual results, retries 429/5xx and
+  timeouts with bounded exponential backoff, and never logs the key.
+  The live API documentation could not be fetched from this environment;
+  the contract is documented at
+  <https://api-dashboard.search.brave.com/app/documentation/web-search>
+  and should be re-confirmed manually before production use.
+- Persistence: `company_candidates` with partial unique indexes on
+  `domain` and `(provider, provider_result_id)`; `ON CONFLICT DO NOTHING`
+  + savepoint per candidate; fill-missing-only update policy.
+- API: `POST /discovery/search`, body `{query, limit}` (limit 1–10,
+  default 5), response `{query, provider, requested_limit, results,
+  counts}`. Errors use the shared envelope.
 
 **Exit criteria**
 
-- Provider adapter is replaceable and injectable; tests use a fake adapter.
-- Discovery results are normalized and persisted with their source.
-- No provider data is invented; missing fields stay missing.
-- Unit and integration tests cover normalization, deduplication, and errors.
-- First Alembic migration exists and upgrades from an empty database.
+- [x] Provider adapter is replaceable and injectable; tests use a fake.
+- [x] Discovery results are normalized and persisted in PostgreSQL.
+- [x] Deduplication is deterministic. Concurrent inserts are protected by
+      partial unique indexes plus `ON CONFLICT DO NOTHING` and a savepoint
+      per candidate; true simultaneity is not exercised by an automated test.
+- [x] Source provenance is preserved on update (first-seen values win; only
+      missing fields are filled).
+- [x] First Alembic migration upgrades an empty database. Verified
+      2026-10-18 on PostgreSQL 17.5: `alembic upgrade head` applied
+      `0001_company_candidates`, and `alembic check` reported
+      "No new upgrade operations detected."
+- [x] Unit and integration tests cover normal and failure paths: 116 passed
+      on 2026-10-18 (Python 3.14.8, PostgreSQL 17.5, `TEST_DATABASE_URL`
+      pointing at `explee_test`). The only warning is a third-party
+      Starlette/httpx deprecation raised from FastAPI's `testclient.py`.
+- [x] All Phase 0 tests still pass.
+- [x] No Docker or prohibited infrastructure introduced.
+- [x] Documentation reflects the implementation.
+
+**Not verified**
+
+- The Brave adapter has not been exercised against the live API. The
+  official documentation could not be fetched from the implementation
+  environment; the request/response contract is implemented from the
+  documented shape and must be re-confirmed before production use.
+- The independent multi-agent review did not complete: the workflow
+  provider failed (quota, then an unavailable approval classifier). Defects
+  fixed during implementation came from manual review, not from that review.
 
 ## P2 — Explorer: research and enrichment
 

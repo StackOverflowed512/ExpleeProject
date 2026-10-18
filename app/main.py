@@ -14,15 +14,17 @@ from app.config import Settings, get_settings
 from app.database import build_engine, build_session_factory
 from app.errors import register_exception_handlers
 from app.logging_config import configure_logging
-from app.routers import health
+from app.routers import discovery, health
+from app.services.providers import build_search_provider
 
 logger = logging.getLogger(__name__)
 
 
 def _build_lifespan(
     engine: Engine,
+    provider: object,
 ) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
-    """Return a lifespan that logs startup/shutdown and disposes the engine."""
+    """Return a lifespan that logs startup/shutdown and releases resources."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -30,37 +32,53 @@ def _build_lifespan(
         try:
             yield
         finally:
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
             engine.dispose()
             logger.info("Stopped %s", SERVICE_NAME)
 
     return lifespan
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    search_provider: object | None = None,
+) -> FastAPI:
     """Create a configured FastAPI application.
 
     Passing explicit ``settings`` is how tests run without depending on the
-    developer's ``.env`` file. The engine is created eagerly but no database
-    connection is opened until the first query.
+    developer's ``.env`` file. ``search_provider`` lets tests (and future
+    callers) inject a provider; by default the provider selected by
+    ``SEARCH_PROVIDER`` is built from settings. The engine is created eagerly
+    but no database connection is opened until the first query.
     """
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
 
     engine = build_engine(resolved_settings)
     session_factory = build_session_factory(engine)
+    provider = (
+        search_provider
+        if search_provider is not None
+        else build_search_provider(resolved_settings)
+    )
 
     app = FastAPI(
         title="Explee API",
         summary="Personal sales intelligence and outreach platform.",
         version=__version__,
-        lifespan=_build_lifespan(engine),
+        lifespan=_build_lifespan(engine, provider),
     )
     app.state.settings = resolved_settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.search_provider = provider
 
     register_exception_handlers(app)
     app.include_router(health.router)
+    app.include_router(discovery.router)
 
     @app.get(
         "/",
@@ -74,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "service": SERVICE_NAME,
             "docs": f"{base}/docs",
             "health": f"{base}/health",
+            "discovery": f"{base}/discovery/search",
         }
 
     return app

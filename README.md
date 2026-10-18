@@ -115,7 +115,45 @@ application only accepts the psycopg 3 driver, so the scheme must be
    password is never printed.
 
 If PostgreSQL is unavailable, the app still starts and `GET /health` works;
-only database-backed features (arriving in later phases) need it.
+discovery needs it because it persists candidates.
+
+## 4b. Configure the Explorer search provider
+
+Discovery needs a web search provider. Two adapters exist:
+
+| `SEARCH_PROVIDER` | Behavior | Credentials |
+| --- | --- | --- |
+| `fake` (default) | Returns no results. The app and tests run without keys. | None |
+| `brave` | Calls the Brave Search API. | `SEARCH_API_KEY` |
+
+To use the real provider:
+
+1. Create a Brave Search API key at
+   <https://api-dashboard.search.brave.com/app/keys>.
+2. Add to `.env`:
+
+   ```dotenv
+   SEARCH_PROVIDER=brave
+   SEARCH_API_KEY=your-key-here
+   SEARCH_TIMEOUT_SECONDS=10
+   SEARCH_MAX_RETRIES=2
+   ```
+
+3. Restart the server. If `SEARCH_PROVIDER=brave` is set without a key, the
+   application refuses to start with a clear validation error.
+
+Manual verification of the real adapter (uses one API request):
+
+```powershell
+python -c "from app.config import get_settings; from app.services.providers import build_search_provider; p = build_search_provider(get_settings()); [print(r.title, r.url) for r in p.search('b2b saas companies berlin', 3)]"
+```
+
+The adapter reads only documented fields (`title`, `url`, `description`),
+skips malformed results, retries rate limits, 5xx responses and timeouts
+with bounded backoff, and never logs the key or raw payloads. The API
+contract is documented at
+<https://api-dashboard.search.brave.com/app/documentation/web-search>;
+re-check it before relying on the adapter in production.
 
 ## 5. Run database migrations
 
@@ -124,9 +162,14 @@ alembic upgrade head
 alembic current
 ```
 
-Alembic reads `DATABASE_URL` from the same settings as the application. No
-revisions exist yet in Phase 0, so `upgrade head` is a no-op that still
-verifies the connection.
+Alembic reads `DATABASE_URL` from the same settings as the application.
+P1 ships the first revision (`0001_company_candidates`), which creates the
+`company_candidates` table and its partial unique indexes. Verify the
+schema afterwards:
+
+```powershell
+psql -U postgres -h localhost -d explee -c "\d company_candidates"
+```
 
 Useful commands:
 
@@ -136,6 +179,32 @@ alembic upgrade head
 alembic downgrade -1
 alembic check
 ```
+
+## 5b. Try a discovery search
+
+With the server running:
+
+```powershell
+$body = @{ query = "B2B SaaS companies hiring sales engineers in Berlin"; limit = 5 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/discovery/search -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 5
+```
+
+Example response (`SEARCH_PROVIDER=fake` returns no results):
+
+```json
+{
+  "query": "B2B SaaS companies hiring sales engineers in Berlin",
+  "provider": "fake",
+  "requested_limit": 5,
+  "results": [],
+  "counts": { "returned": 0, "created": 0, "updated": 0, "skipped": 0 }
+}
+```
+
+With `SEARCH_PROVIDER=brave`, `results` contains persisted candidates with
+`name`, `website_url`, `domain`, `description`, `provider`, `source_url`,
+and timestamps. Repeating a search does not create duplicates; it reports
+`created: 0` and fills only previously missing fields.
 
 ## 6. Start the development server
 
@@ -174,7 +243,19 @@ pytest tests/integration
 ```
 
 Tests are deterministic, use no network, no live database, and no Mistral
-credentials.
+credentials. PostgreSQL-backed integration tests (discovery persistence,
+API persistence, migrations) run only when `TEST_DATABASE_URL` points at a
+**disposable** database; otherwise they are skipped:
+
+```powershell
+$env:TEST_DATABASE_URL = "postgresql+psycopg://postgres:omkar2005@localhost:5432/explee_test"
+pytest -q
+```
+
+The migration test downgrades that database to `base` and upgrades it back
+to `head`, so never point `TEST_DATABASE_URL` at real data. To create the
+test database in pgAdmin: **Databases → Create → Database**, name
+`explee_test`, owner the same role.
 
 ## 8. Common setup problems
 
@@ -199,15 +280,19 @@ app/
   database.py        engine, session factory, request-scoped session
   errors.py          error envelope and exception handlers
   logging_config.py  logging setup
-  models/            SQLAlchemy declarative base (models arrive with features)
+  models/            SQLAlchemy models and declarative base
+    company_candidate.py  discovered company candidates
   schemas/           Pydantic request/response schemas
-  routers/           thin HTTP routes
-  services/          business logic; provider adapters later
+  routers/           thin HTTP routes (health, discovery)
+  services/          business logic
+    discovery.py          search -> normalize -> dedupe -> persist
+    discovery_urls.py     URL/domain normalization
+    providers/            SearchProvider protocol + brave/fake adapters
 alembic/             migration environment (URL from app settings)
 docs/                architecture and phased plan
 scripts/             operational helpers (check_db)
 tests/unit/          fast, isolated tests
-tests/integration/   full ASGI app tests (in-process HTTPX)
+tests/integration/   ASGI app tests; DB tests when TEST_DATABASE_URL is set
 ```
 
 See `docs/architecture.md` for boundaries and `docs/implementation-plan.md`
