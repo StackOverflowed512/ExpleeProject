@@ -1,10 +1,10 @@
 """ORM models.
 
-Phase 0 defines only the declarative base; feature models arrive with their
-own phases. New models must be imported here so Alembic autogenerate sees
-them through ``app.models.Base.metadata``.
+Import every model here so ``app.models.Base.metadata`` — and therefore
+Alembic autogenerate — sees it.
 """
 
 from app.models.base import Base
+from app.models.company_candidate import CompanyCandidate
 
-__all__ = ["Base"]
+__all__ = ["Base", "CompanyCandidate"]

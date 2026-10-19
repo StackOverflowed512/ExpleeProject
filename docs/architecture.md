@@ -49,19 +49,50 @@ never read the developer's `.env`.
 
 ### Explorer
 
-1. **Discovery** — a `SearchProvider` protocol (web search, external
-   company data). Adapters return normalized `CompanyCandidate` records.
+1. **Discovery** — implemented in P1. A `SearchProvider` protocol
+   (`app/services/providers/search.py`) accepts a natural-language query and
+   a bounded limit and returns normalized `SearchResultItem` records. Two
+   adapters exist: `brave` (real API) and `fake` (deterministic, used by
+   tests and the credential-free default). Selection happens through
+   `SEARCH_PROVIDER`; discovery code never imports a vendor SDK or reads a
+   vendor payload.
 2. **Research** — fetch and extract public website content through a
    `WebsiteFetcher` protocol; store extracted facts with their source URL.
+   Not implemented yet.
 3. **Enrichment** — combine discovery and research into a prospect record.
-4. **Qualification** — deterministic, rule-based scoring in Phase 1;
-   Mistral-assisted qualification later, with the score and rationale
+   Not implemented yet.
+4. **Qualification** — deterministic, rule-based scoring in a later phase;
+   Mistral-assisted qualification after that, with the score and rationale
    persisted so a decision can be audited.
-5. **Persistence** — prospects are saved only through a service that
-   enforces deduplication.
+5. **Persistence** — `company_candidates` stores discovered companies
+   through the discovery service, which enforces deduplication and source
+   provenance.
 
 Providers must never invent data: a field is either sourced (with a URL or
 provider name recorded) or absent.
+
+### Discovery details (P1)
+
+- **Normalization.** `app/services/discovery_urls.py` accepts only absolute
+  http/https URLs without userinfo. Domains are lowercased, stripped of a
+  trailing dot and a leading `www.`, converted to IDNA ASCII, and used as
+  the deduplication key.
+- **Deduplication.** Inside a batch: normalized domain, or
+  `(provider, provider_result_id)` when a consumer of the provider supplies
+  one. In the database: partial unique indexes on `domain` and on
+  `(provider, provider_result_id)`, both `WHERE ... IS NOT NULL`, so rows
+  without either never conflict. Names are never part of identity.
+- **Concurrency.** Inserts use PostgreSQL `INSERT ... ON CONFLICT DO NOTHING
+  RETURNING id` inside a savepoint per candidate; the loser of a race reads
+  the winner's row. Any other database failure rolls back the whole search.
+- **Update policy.** A later search fills only fields that are currently
+  `NULL` (website URL, description). First-seen name, source URL, and known
+  values are never overwritten, preserving provenance.
+- **Error mapping.** Provider failures use the shared envelope:
+  `provider_authentication_failed` (502), `provider_unavailable` (502),
+  `provider_rate_limited` (503), `provider_timeout` (504), and
+  `discovery_persistence_failed` (500). Messages never contain keys or
+  provider payloads.
 
 ### Outreach Agent
 
@@ -87,7 +118,8 @@ so no credentials are required to run tests.
 PostgreSQL via SQLAlchemy 2.x and psycopg 3. Alembic is the only schema
 migration mechanism; `Base.metadata` uses a naming convention so constraint
 names are deterministic. Tests that need a database use a dedicated test
-database and are marked as such; Phase 0 tests need none.
+database (`TEST_DATABASE_URL`, for example `explee_test`) and are skipped
+when it is unset; the application database is never touched by tests.
 
 ### Email
 

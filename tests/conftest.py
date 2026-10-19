@@ -21,9 +21,16 @@ TEST_DATABASE_URL = "postgresql+psycopg://explee:explee@localhost:5432/explee_te
 @pytest.fixture(autouse=True)
 def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Prevent ``.env`` and process settings from leaking into unit tests."""
-    monkeypatch.delenv("APP_ENV", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    for name in (
+        "APP_ENV",
+        "DATABASE_URL",
+        "LOG_LEVEL",
+        "SEARCH_PROVIDER",
+        "SEARCH_API_KEY",
+        "SEARCH_TIMEOUT_SECONDS",
+        "SEARCH_MAX_RETRIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -31,12 +38,13 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest.fixture
 def test_settings() -> Settings:
-    """Deterministic settings with no ``.env`` file involved."""
+    """Deterministic settings that never read the developer's ``.env``."""
     return Settings(
         _env_file=None,
         app_env="testing",
         database_url=TEST_DATABASE_URL,
         log_level="WARNING",
+        search_provider="fake",
     )
 
 
