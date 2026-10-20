@@ -29,6 +29,12 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "SEARCH_API_KEY",
         "SEARCH_TIMEOUT_SECONDS",
         "SEARCH_MAX_RETRIES",
+        "WEBSITE_FETCH_CONNECT_TIMEOUT_SECONDS",
+        "WEBSITE_FETCH_READ_TIMEOUT_SECONDS",
+        "WEBSITE_FETCH_TOTAL_TIMEOUT_SECONDS",
+        "WEBSITE_FETCH_MAX_BYTES",
+        "WEBSITE_FETCH_MAX_REDIRECTS",
+        "WEBSITE_FETCH_MAX_TEXT_CHARS",
     ):
         monkeypatch.delenv(name, raising=False)
     get_settings.cache_clear()
@@ -52,11 +58,20 @@ def test_settings() -> Settings:
 def build_app(test_settings: Settings) -> Callable[..., FastAPI]:
     """Factory for a fresh application instance per test."""
 
-    def _build(**overrides: object) -> FastAPI:
+    def _build(
+        *,
+        search_provider: object | None = None,
+        website_fetcher: object | None = None,
+        **overrides: object,
+    ) -> FastAPI:
         settings = (
             test_settings.model_copy(update=overrides) if overrides else test_settings
         )
-        return create_app(settings)
+        return create_app(
+            settings,
+            search_provider=search_provider,
+            website_fetcher=website_fetcher,
+        )
 
     return _build
 

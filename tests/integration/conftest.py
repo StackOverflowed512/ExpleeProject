@@ -68,7 +68,9 @@ def clean_database(db_engine: Engine) -> None:
     from an empty table regardless of how it obtains its session.
     """
     with db_engine.begin() as connection:
-        connection.execute(text("TRUNCATE company_candidates RESTART IDENTITY"))
+        connection.execute(
+            text("TRUNCATE company_candidates RESTART IDENTITY CASCADE")
+        )
 
 
 @pytest.fixture

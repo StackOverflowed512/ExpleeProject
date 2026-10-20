@@ -77,6 +77,49 @@ class Settings(BaseSettings):
         description="Retries for transient search provider failures.",
     )
 
+    # --- Explorer website research -------------------------------------
+    website_fetch_connect_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=30,
+        description=(
+            "Timeout for establishing a connection to a company website."
+        ),
+    )
+    website_fetch_read_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=60,
+        description="Timeout for reading a company website response.",
+    )
+    website_fetch_total_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        le=120,
+        description=(
+            "Overall deadline for one website fetch, including redirects and "
+            "response reading."
+        ),
+    )
+    website_fetch_max_bytes: int = Field(
+        default=2_000_000,
+        ge=1024,
+        le=10_000_000,
+        description="Maximum number of response bytes downloaded per fetch.",
+    )
+    website_fetch_max_redirects: int = Field(
+        default=3,
+        ge=0,
+        le=10,
+        description="Maximum number of redirects followed per fetch.",
+    )
+    website_fetch_max_text_chars: int = Field(
+        default=20_000,
+        ge=100,
+        le=200_000,
+        description="Maximum number of characters of visible text retained.",
+    )
+
     @field_validator("app_env", mode="before")
     @classmethod
     def _normalize_app_env(cls, value: object) -> object:

@@ -4,7 +4,7 @@ Phases are sequential. Each phase ends with its exit criteria met, tests
 passing, and this document updated. No phase starts until the previous one
 is accepted.
 
-## P0 — Foundation (this phase)
+## P0 — Foundation
 
 **Scope:** project layout, typed settings, FastAPI factory, health endpoint,
 error envelope, SQLAlchemy engine/session wiring, Alembic configuration,
@@ -89,12 +89,68 @@ normalization, deduplication, and provenance-preserving persistence;
 URLs; enrichment service combining discovery and research; failure and
 partial-data handling.
 
+**Implementation notes (2026-10-20)**
+
+- Provider contract: `app/services/providers/website.py`; adapters
+  `http_website.py` (HTTPX + BeautifulSoup) and `fake_website.py`.
+  `build_website_fetcher()` builds the real adapter from settings.
+- Safety: `app/services/providers/url_safety.py` validates every URL and
+  redirect, rejects credentials/ambiguous numeric hosts/non-default ports,
+  resolves DNS, requires every address to be globally routable, and rejects
+  known metadata endpoints. The HTTP adapter connects to a validated IP while
+  preserving Host/SNI. DNS resolution time is not independently bounded and
+  the documented limitation is in `docs/architecture.md`.
+- Bounds: connect/read/overall timeouts, maximum bytes, redirects, and
+  extracted characters are validated settings. Only HTML/XHTML is processed.
+- Persistence: `research_records` (migration `0002_research_records`) is
+  append-only with a foreign key to `company_candidates`, a unique
+  `(company_candidate_id, attempt_key)` constraint, and provenance fields.
+  Successful research is never overwritten by a later failure.
+- Services: `app/services/research.py` owns the transaction and idempotency
+  policy; `app/services/enrichment.py` is a pure read-only projection.
+- API: `POST /companies/{candidate_id}/research`,
+  `GET /companies/{candidate_id}/research`, and
+  `GET /companies/{candidate_id}/enrichment`. The POST body accepts no fields,
+  so clients cannot submit a URL. Unknown candidates return
+  `candidate_not_found` (404); missing websites return
+  `candidate_website_missing` (422); failed fetches return 200 with a typed
+  outcome and are persisted.
+- Settings: `WEBSITE_FETCH_CONNECT_TIMEOUT_SECONDS`,
+  `WEBSITE_FETCH_READ_TIMEOUT_SECONDS`, `WEBSITE_FETCH_TOTAL_TIMEOUT_SECONDS`,
+  `WEBSITE_FETCH_MAX_BYTES`, `WEBSITE_FETCH_MAX_REDIRECTS`, and
+  `WEBSITE_FETCH_MAX_TEXT_CHARS`. No credentials are required.
+
 **Exit criteria**
 
-- Extraction results store their provenance (URL, fetched timestamp).
-- Fetch failures degrade gracefully and are visible in logs.
-- Enrichment is idempotent for the same prospect and input.
-- Tests use recorded fixtures, never live websites.
+- [x] Extraction results store their provenance (URL, fetched timestamp).
+- [x] Fetch failures degrade gracefully, are stored, and are visible in logs
+      and the API outcome without erasing earlier success.
+- [x] Enrichment is idempotent for the same prospect and input and performs no
+      network requests.
+- [x] Tests use HTTPX mock transports, injected DNS, fake providers, and
+      fixtures; no test contacts a live website.
+- [x] Migration `0002_research_records` upgrades a database created by
+      `0001_company_candidates` without losing candidates; verified
+      2026-10-20 on PostgreSQL 17.5.
+- [x] `alembic check` reports no pending model changes against the test
+      database (also asserted by an integration test).
+- [x] Full suite: 278 passed on 2026-10-20 with `TEST_DATABASE_URL` pointing
+      at `explee_test`; 216 passed and 62 skipped without it. Python 3.14.8.
+- [x] Existing Phase 0 and Phase 1 tests still pass.
+- [x] No Docker or prohibited infrastructure introduced.
+- [x] Documentation reflects the implementation.
+
+**Not verified**
+
+- The HTTP fetcher was not exercised against a live public website in this
+  environment. Its request construction, extraction, and every failure path
+  are covered by mock transports and injected DNS; a manual smoke test against
+  a known site is still advisable before production use.
+- DNS resolution uses the OS resolver and is not independently timed. The
+  adapter pins the validated address, but resolver latency itself is outside
+  the overall deadline.
+- The research API was exercised through the ASGI app and PostgreSQL test
+  database, not a separately deployed uvicorn process.
 
 ## P3 — Explorer: qualification and saved prospects
 

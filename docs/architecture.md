@@ -1,8 +1,9 @@
 # Architecture
 
-Phase 0 establishes the skeleton. The target is a **modular monolith**: one
-FastAPI process, one PostgreSQL database, and internal module boundaries that
-can later be extracted or replaced without touching business logic.
+Phase 0 established the skeleton; Phases 1 and 2 add discovery, research, and
+enrichment. The target remains a **modular monolith**: one FastAPI process,
+one PostgreSQL database, and internal module boundaries that can later be
+extracted or replaced without touching business logic.
 
 ## Layering
 
@@ -56,11 +57,14 @@ never read the developer's `.env`.
    tests and the credential-free default). Selection happens through
    `SEARCH_PROVIDER`; discovery code never imports a vendor SDK or reads a
    vendor payload.
-2. **Research** — fetch and extract public website content through a
-   `WebsiteFetcher` protocol; store extracted facts with their source URL.
-   Not implemented yet.
-3. **Enrichment** — combine discovery and research into a prospect record.
-   Not implemented yet.
+2. **Research** — implemented in P2. A `WebsiteFetcher` protocol
+   (`app/services/providers/website.py`) returns a normalized, bounded
+   `WebsiteFetchResult`. One adapter fetches over HTTPX with SSRF checks and
+   HTML extraction; a deterministic fake serves tests. Research records are
+   append-only and keep their source URL and fetch time.
+3. **Enrichment** — implemented in P2. A read-only projection combines the
+   discovery fields with stored research and reports a status; it never
+   fetches, so it is idempotent and causes no extra network traffic.
 4. **Qualification** — deterministic, rule-based scoring in a later phase;
    Mistral-assisted qualification after that, with the score and rationale
    persisted so a decision can be audited.
@@ -93,6 +97,64 @@ provider name recorded) or absent.
   `provider_rate_limited` (503), `provider_timeout` (504), and
   `discovery_persistence_failed` (500). Messages never contain keys or
   provider payloads.
+
+### Research details (P2)
+
+- **Fetch contract.** `WebsiteFetcher.fetch(url)` returns a frozen
+  `WebsiteFetchResult` with requested and final URL, status, content type,
+  page title, extracted text, `fetched_at`, an `outcome`
+  (`success`/`partial`/`failed`), an optional stable `failure_category`, and a
+  `truncated` flag. Raw headers, cookies, response bodies, and exception text
+  are never part of the contract or the API responses.
+- **Only stored URLs.** The API accepts no URL from clients. Research uses
+  `company_candidates.website_url`; a candidate without a website returns
+  `candidate_website_missing` (422). There is no general crawler and no
+  automatic discovery of linked pages.
+- **SSRF protection.** `app/services/providers/url_safety.py` validates every
+  URL before it is requested and again for every redirect. It accepts only
+  `http`/`https` on the default ports, rejects embedded credentials, control
+  characters, fragments, ambiguous numeric hosts, known metadata hostnames,
+  and non-canonical ports, then resolves the hostname itself and rejects the
+  host unless *every* resolved address is a globally routable unicast address
+  (`ipaddress.is_global` plus explicit loopback/link-local/private/reserved/
+  multicast/unspecified checks and a small metadata-IP denylist). IPv4-mapped
+  IPv6 addresses are canonicalized before the check.
+- **DNS pinning.** The adapter connects to a validated IP address while
+  preserving the logical `Host` header and TLS SNI, which closes the
+  resolution-to-connection gap for the fetched request. Redirects are followed
+  manually so each hop is revalidated.
+- **Documented limitation.** Address validation uses the operating system
+  resolver, which is not independently timed and can itself be pointed at a
+  private address; those addresses are rejected after resolution, but name
+  resolution time is not separately bounded. The fetcher also cannot guarantee
+  that a *server-side* proxy or redirect chain never changes behaviour between
+  validation and connection beyond the pinned address it chose. TLS
+  certificate validation is delegated to HTTPX. These limitations are why the
+  fetcher fetches exactly one page per candidate and never follows links.
+- **Bounded work.** Explicit connect/read timeouts plus an overall deadline,
+  a maximum downloaded byte count, a redirect limit, and a maximum extracted
+  character count. Oversized responses, timeouts, connection errors, HTTP
+  errors, unsupported content types, and malformed markup all produce typed
+  failures rather than exceptions. Only `text/html` and
+  `application/xhtml+xml` are processed; visible text excludes scripts,
+  styles, navigation, headers, footers, sidebars, forms, and hidden elements.
+- **Persistence policy.** `research_records` is append-only. A failed refresh
+  never removes an earlier success; changed content or a changed outcome adds
+  a record. `attempt_key` chains an attempt to the previous record and a
+  result signature, and a unique `(company_candidate_id, attempt_key)`
+  constraint makes the same transition safe under concurrency. An identical
+  consecutive attempt returns the existing record with `created: false`.
+  Original candidate provenance (`source_url`, first-seen identity) is never
+  modified.
+- **Enrichment.** `app/services/enrichment.py` projects discovery data plus
+  the latest successful research. Status is `not_researched`, `researched`,
+  `partial`, `stale` (a later attempt failed but earlier research remains), or
+  `failed`. The projection is pure, so it is testable without HTTP or a
+  database and is idempotent for the same inputs.
+- **Error mapping.** `candidate_not_found` (404),
+  `candidate_website_missing` (422), and `research_persistence_failed` (500).
+  A failed fetch is a stored, auditable result returned with HTTP 200 and a
+  `failure_category`, not a server error.
 
 ### Outreach Agent
 
@@ -146,3 +208,16 @@ first-class, so the same workflow can be exercised without delivering mail.
 | Health check | Liveness only | Keeps `/health` fast and independent of PostgreSQL; readiness checks arrive with the features that need them. |
 | Alembic URL | From app settings | One source of truth; no credentials in `alembic.ini`. |
 | Error contract | Single envelope with stable codes | Frontend and tests can branch on `code`, not prose. |
+
+## Phase 2 decisions
+
+| Decision | Choice | Rationale |
+| --- | --- | --- |
+| HTTP client | One shared `httpx.Client` per fetcher, closed at app shutdown | Connection reuse and explicit lifecycle; tests inject mock transports. |
+| Redirects | Followed manually with per-hop validation | Never trust a `Location` header; enforce a redirect limit and detect loops. |
+| DNS | Resolve, validate every address, connect to a chosen IP | Removes the TOCTOU gap the HTTP client would otherwise create. |
+| HTML parsing | BeautifulSoup with the standard-library `html.parser` | Reliable extraction without a compiler-heavy dependency. |
+| Unsupported types | Fail with `unsupported_content_type` | Avoid persisting binary or non-page content as facts. |
+| Research history | Append-only records plus a chained `attempt_key` | Auditable failures without duplicates or lost successes. |
+| Enrichment | Pure read-only projection | Idempotent, no hidden network calls, trivially unit testable. |
+| Failed research HTTP status | `200` with a typed outcome | The failure is the persisted result, not a transport error. |

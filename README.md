@@ -7,9 +7,18 @@ Personal AI-powered sales intelligence and outreach platform. Two modules:
 - **Outreach Agent** — build campaigns from saved prospects, generate drafts,
   obtain explicit human approval, and send through a configurable provider.
 
-This repository currently contains **Phase 0: foundation** — application
-skeleton, configuration, health endpoint, error contract, database wiring,
-migrations setup, and tests. No product features are implemented yet.
+Implemented so far:
+
+- **Phase 0 — foundation:** application factory, typed configuration, health
+  endpoint, shared error envelope, database wiring, Alembic setup, tests.
+- **Phase 1 — Explorer discovery:** a replaceable search provider, company
+  candidate persistence with deduplication and provenance, and
+  `POST /discovery/search`.
+- **Phase 2 — Explorer research and enrichment:** a bounded, SSRF-protected
+  website fetcher, append-only research records with source URLs and
+  timestamps, and research/enrichment endpoints.
+
+Qualification (Phase 3) and the Outreach Agent are not implemented yet.
 
 ## Prerequisites
 
@@ -155,6 +164,27 @@ contract is documented at
 <https://api-dashboard.search.brave.com/app/documentation/web-search>;
 re-check it before relying on the adapter in production.
 
+## 4c. Configure website research
+
+Research needs no API credentials. It fetches only the website URL already
+stored on a discovered candidate; there is no endpoint for submitting an
+arbitrary URL. The defaults are safe for a personal deployment:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `WEBSITE_FETCH_CONNECT_TIMEOUT_SECONDS` | `5` | Connection timeout |
+| `WEBSITE_FETCH_READ_TIMEOUT_SECONDS` | `10` | Response read timeout |
+| `WEBSITE_FETCH_TOTAL_TIMEOUT_SECONDS` | `15` | Overall fetch deadline, including redirects |
+| `WEBSITE_FETCH_MAX_BYTES` | `2000000` | Maximum downloaded bytes |
+| `WEBSITE_FETCH_MAX_REDIRECTS` | `3` | Maximum redirects followed |
+| `WEBSITE_FETCH_MAX_TEXT_CHARS` | `20000` | Maximum retained visible-text characters |
+
+Only public `http`/`https` destinations on the default ports are fetched.
+Loopback, private, link-local, multicast, reserved, and cloud metadata
+destinations are rejected before connecting, and every redirect destination
+is validated again. See `docs/architecture.md` for the DNS-rebinding
+limitation and the exact security model.
+
 ## 5. Run database migrations
 
 ```powershell
@@ -163,12 +193,18 @@ alembic current
 ```
 
 Alembic reads `DATABASE_URL` from the same settings as the application.
-P1 ships the first revision (`0001_company_candidates`), which creates the
-`company_candidates` table and its partial unique indexes. Verify the
-schema afterwards:
+Two revisions exist:
+
+| Revision | Creates |
+| --- | --- |
+| `0001_company_candidates` | `company_candidates` and its partial unique indexes |
+| `0002_research_records` | `research_records`, its foreign key, unique attempt key, and candidate/fetched index |
+
+Verify the schema afterwards:
 
 ```powershell
 psql -U postgres -h localhost -d explee -c "\d company_candidates"
+psql -U postgres -h localhost -d explee -c "\d research_records"
 ```
 
 Useful commands:
@@ -206,6 +242,59 @@ With `SEARCH_PROVIDER=brave`, `results` contains persisted candidates with
 and timestamps. Repeating a search does not create duplicates; it reports
 `created: 0` and fills only previously missing fields.
 
+## 5c. Research and enrich a discovered company
+
+Once a candidate exists, research fetches its stored website and stores an
+append-only record. Use the candidate `id` returned by discovery:
+
+```powershell
+# Fetch and store research for candidate 1 (no request body needed).
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/companies/1/research | ConvertTo-Json -Depth 5
+
+# Read the full research history, newest first.
+Invoke-RestMethod -Uri http://127.0.0.1:8000/companies/1/research | ConvertTo-Json -Depth 5
+
+# Combine discovery data with stored research (read-only, never fetches).
+Invoke-RestMethod -Uri http://127.0.0.1:8000/companies/1/enrichment | ConvertTo-Json -Depth 5
+```
+
+Example research response (trimmed):
+
+```json
+{
+  "id": 1,
+  "company_candidate_id": 1,
+  "requested_url": "https://acme.com/",
+  "final_url": "https://www.acme.com/",
+  "fetched_at": "2026-10-20T15:00:00Z",
+  "http_status": 200,
+  "content_type": "text/html; charset=utf-8",
+  "page_title": "Acme Corp",
+  "page_text": "Acme builds reliable widgets.",
+  "outcome": "success",
+  "failure_category": null,
+  "truncated": false,
+  "created": true
+}
+```
+
+Policy and status codes:
+
+- `research_records` is append-only. A failed refresh is stored and returned
+  as `outcome: "failed"` with a stable `failure_category` (for example
+  `timeout`, `http_error`, `unsupported_content_type`, `blocked_destination`,
+  or `response_too_large`), but it never overwrites an earlier success.
+- Repeating an identical consecutive attempt returns the existing record with
+  `created: false`; changed page content or a changed outcome creates a new
+  record. `POST /companies/{id}/research` returns `200` for successful,
+  partial, and failed fetches because the failure itself is a stored,
+  auditable result. Unknown candidates return `404`; candidates without a
+  website return `422 candidate_website_missing`.
+- `GET /companies/{id}/research` returns every attempt plus
+  `latest_successful`. `GET /companies/{id}/enrichment` returns the discovery
+  fields, the latest usable research, the latest attempt, and a status of
+  `not_researched`, `researched`, `partial`, `stale`, or `failed`.
+
 ## 6. Start the development server
 
 ```powershell
@@ -242,20 +331,27 @@ pytest tests/unit
 pytest tests/integration
 ```
 
-Tests are deterministic, use no network, no live database, and no Mistral
-credentials. PostgreSQL-backed integration tests (discovery persistence,
-API persistence, migrations) run only when `TEST_DATABASE_URL` points at a
-**disposable** database; otherwise they are skipped:
+Tests are deterministic, use no network, no live website, no live database,
+and no Mistral credentials. Website fetches are exercised with HTTPX mock
+transports and injected DNS; research uses the fake fetcher. PostgreSQL-backed
+integration tests (discovery persistence, research persistence, API
+persistence, migrations, `alembic check`) run only when `TEST_DATABASE_URL`
+points at a **disposable** database; otherwise they are skipped:
 
 ```powershell
-$env:TEST_DATABASE_URL = "postgresql+psycopg://postgres:omkar2005@localhost:5432/explee_test"
+$env:TEST_DATABASE_URL = "postgresql+psycopg://explee:change-me@localhost:5432/explee_test"
 pytest -q
 ```
 
-The migration test downgrades that database to `base` and upgrades it back
-to `head`, so never point `TEST_DATABASE_URL` at real data. To create the
-test database in pgAdmin: **Databases → Create → Database**, name
-`explee_test`, owner the same role.
+The migration tests drop and recreate the schema in that database (one of them
+downgrades to `base` and upgrades back to `head`), so never point
+`TEST_DATABASE_URL` at real data. To create the test database in pgAdmin:
+**Databases → Create → Database**, name `explee_test`, owner the same role.
+
+Verified on 2026-10-20 with Python 3.14.8 and PostgreSQL 17.5:
+`278 passed` with `TEST_DATABASE_URL` set; `216 passed, 62 skipped` without it.
+The only warning is a third-party Starlette/httpx deprecation raised from
+FastAPI's `testclient.py`.
 
 ## 8. Common setup problems
 
@@ -282,12 +378,16 @@ app/
   logging_config.py  logging setup
   models/            SQLAlchemy models and declarative base
     company_candidate.py  discovered company candidates
+    research_record.py    append-only website research attempts
   schemas/           Pydantic request/response schemas
-  routers/           thin HTTP routes (health, discovery)
+  routers/           thin HTTP routes (health, discovery, research)
   services/          business logic
     discovery.py          search -> normalize -> dedupe -> persist
     discovery_urls.py     URL/domain normalization
-    providers/            SearchProvider protocol + brave/fake adapters
+    research.py           fetch -> extract -> persist with provenance
+    enrichment.py         discovery + stored research (read-only)
+    providers/            SearchProvider and WebsiteFetcher protocols
+                          + brave/fake search and http/fake website adapters
 alembic/             migration environment (URL from app settings)
 docs/                architecture and phased plan
 scripts/             operational helpers (check_db)
