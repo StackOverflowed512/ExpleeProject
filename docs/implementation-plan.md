@@ -29,22 +29,23 @@ that need them; Phase 0 creates no empty feature modules.
 
 ## P1 — Explorer: discovery
 
-**Scope:** `SearchProvider` protocol and Brave Search adapter; fake provider;
-`company_candidates` model and first migration; discovery service with
-normalization, deduplication, and provenance-preserving persistence;
-`POST /discovery/search`; provider configuration and failure mapping.
+**Scope:** `SearchProvider` protocol and a real search adapter (Brave in P1,
+replaced by Tavily in P1.1); fake provider; `company_candidates` model and
+first migration; discovery service with normalization, deduplication, and
+provenance-preserving persistence; `POST /discovery/search`; provider
+configuration and failure mapping.
 
-**Implementation notes (2026-10-18)**
+**Implementation notes (2026-10-18; provider updated in P1.1)**
 
 - Provider contract: `app/services/providers/search.py`; adapters
-  `brave.py` and `fake.py`; selected by `SEARCH_PROVIDER` (`fake` default).
-- Brave adapter reads only documented fields (`title`, `url`,
-  `description`), skips malformed individual results, retries 429/5xx and
-  timeouts with bounded exponential backoff, and never logs the key.
-  The live API documentation could not be fetched from this environment;
-  the contract is documented at
-  <https://api-dashboard.search.brave.com/app/documentation/web-search>
-  and should be re-confirmed manually before production use.
+  `tavily.py` and `fake.py`; selected by `SEARCH_PROVIDER` (`tavily`
+  default, `fake` for credential-free runs and tests).
+- Tavily adapter posts JSON to `https://api.tavily.com/search` with a Bearer
+  token and reads only documented fields (`title`, `url`, `content`,
+  optional `id`). It skips malformed individual results, retries only
+  transient failures (429/5xx/timeouts/connection errors) with bounded
+  backoff and a bounded `Retry-After`, does not retry authentication or
+  other permanent 4xx failures, and never logs the key or payload.
 - Persistence: `company_candidates` with partial unique indexes on
   `domain` and `(provider, provider_result_id)`; `ON CONFLICT DO NOTHING`
   + savepoint per candidate; fill-missing-only update policy.
@@ -75,13 +76,59 @@ normalization, deduplication, and provenance-preserving persistence;
 
 **Not verified**
 
-- The Brave adapter has not been exercised against the live API. The
-  official documentation could not be fetched from the implementation
-  environment; the request/response contract is implemented from the
-  documented shape and must be re-confirmed before production use.
+- The Tavily adapter has not been exercised against the live API in this
+  environment because no real key was available. Automated tests use HTTPX
+  mock transports; the manual command in `README.md` documents how to run a
+  live check with a key.
 - The independent multi-agent review did not complete: the workflow
   provider failed (quota, then an unavailable approval classifier). Defects
   fixed during implementation came from manual review, not from that review.
+
+## P1.1 — Explorer: replace Brave with Tavily
+
+**Scope:** swap the real discovery search adapter from Brave to Tavily,
+including configuration, provider selection, error mapping, tests, and
+documentation. No API, schema, or migration changes.
+
+**Implementation notes (2026-10-20)**
+
+- Endpoint and payload follow the official Tavily Search API:
+  `POST https://api.tavily.com/search`, `Authorization: Bearer <key>`, and a
+  JSON body with `query`, `max_results`, `search_depth=basic`, and
+  `include_*` flags disabled.
+- `TAVILY_API_KEY` replaces `SEARCH_API_KEY`; `SEARCH_PROVIDER` accepts
+  `tavily` (default real provider) and `fake`. The key is optional at
+  startup. Discovering with Tavily selected but no key raises
+  `provider_not_configured` (503) at request time; there is no silent
+  fallback.
+- HTTPX remains the client (no Tavily SDK). Timeouts and retry settings are
+  reused. Only transient failures are retried; `Retry-After` is honored with
+  a cap. Provider errors never include keys or upstream bodies.
+- No Alembic revision was added: provider configuration is environment-only.
+
+**Exit criteria**
+
+- [x] Tavily replaces Brave as the configured real discovery provider.
+- [x] The `SearchProvider` contract and `POST /discovery/search` response
+      shape are unchanged.
+- [x] The app starts and `/health` works without a Tavily key.
+- [x] Discovery without a configured key returns a safe,
+      `provider_not_configured` error.
+- [x] Automated tests use mocks/fakes and require no external API access.
+- [x] Existing Phase 0 and Phase 1 regression tests pass. Full suite on
+      2026-10-20: 134 passed (Python 3.14.8, PostgreSQL 17.5,
+      `TEST_DATABASE_URL` pointing at `explee_test`). Without a test
+      database: 107 passed, 27 skipped. `alembic check` reported no new
+      upgrade operations.
+- [x] No migration was added and no unrelated dependency was introduced.
+- [x] Documentation and `.env.example` contain no stale Brave setup.
+
+**Not verified**
+
+- No live Tavily request was made: no real key was available in the
+  implementation environment. Mocked tests cover request construction,
+  normalization, retries, and failure mapping; live behavior remains a
+  manual check.
 
 ## P2 — Explorer: research and enrichment
 

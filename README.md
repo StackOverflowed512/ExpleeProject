@@ -7,9 +7,11 @@ Personal AI-powered sales intelligence and outreach platform. Two modules:
 - **Outreach Agent** — build campaigns from saved prospects, generate drafts,
   obtain explicit human approval, and send through a configurable provider.
 
-This repository currently contains **Phase 0: foundation** — application
-skeleton, configuration, health endpoint, error contract, database wiring,
-migrations setup, and tests. No product features are implemented yet.
+This repository currently contains **Phases 0 and 1**, plus the **P1.1 search
+provider swap**: application skeleton, configuration, health endpoint, error
+contract, database wiring, migrations, and Explorer company discovery backed
+by Tavily Search. Website research, qualification, and outreach features are
+not implemented yet.
 
 ## Prerequisites
 
@@ -123,37 +125,53 @@ Discovery needs a web search provider. Two adapters exist:
 
 | `SEARCH_PROVIDER` | Behavior | Credentials |
 | --- | --- | --- |
-| `fake` (default) | Returns no results. The app and tests run without keys. | None |
-| `brave` | Calls the Brave Search API. | `SEARCH_API_KEY` |
+| `tavily` (default) | Calls the Tavily Search API. | `TAVILY_API_KEY` |
+| `fake` | Returns no results. Used by tests and for credential-free runs. | None |
 
-To use the real provider:
+To use Tavily:
 
-1. Create a Brave Search API key at
-   <https://api-dashboard.search.brave.com/app/keys>.
+1. Create a Tavily API key at <https://app.tavily.com/home>.
 2. Add to `.env`:
 
    ```dotenv
-   SEARCH_PROVIDER=brave
-   SEARCH_API_KEY=your-key-here
+   SEARCH_PROVIDER=tavily
+   TAVILY_API_KEY=tvly-your-key-here
    SEARCH_TIMEOUT_SECONDS=10
    SEARCH_MAX_RETRIES=2
    ```
 
-3. Restart the server. If `SEARCH_PROVIDER=brave` is set without a key, the
-   application refuses to start with a clear validation error.
+3. Restart the server. The key is optional at startup, so `/health` and
+   unrelated routes work without it. A discovery request made while
+   `SEARCH_PROVIDER=tavily` and no key is configured returns the safe error
+   envelope `provider_not_configured` (HTTP 503). The app never silently
+   switches to the fake provider when Tavily credentials are missing.
 
-Manual verification of the real adapter (uses one API request):
+Manual verification of the real adapter (uses one API request and therefore
+consumes Tavily credits):
 
 ```powershell
 python -c "from app.config import get_settings; from app.services.providers import build_search_provider; p = build_search_provider(get_settings()); [print(r.title, r.url) for r in p.search('b2b saas companies berlin', 3)]"
 ```
 
-The adapter reads only documented fields (`title`, `url`, `description`),
-skips malformed results, retries rate limits, 5xx responses and timeouts
-with bounded backoff, and never logs the key or raw payloads. The API
-contract is documented at
-<https://api-dashboard.search.brave.com/app/documentation/web-search>;
+The adapter posts JSON to `https://api.tavily.com/search` with a Bearer
+token, reads only documented fields (`title`, `url`, `content`, optional
+`id`), skips malformed individual results, retries only transient failures
+(429, 5xx, timeouts, connection errors) with bounded backoff, honors a
+bounded `Retry-After`, and never logs the key or raw payloads. Authentication
+failures and other permanent 4xx responses are not retried. The API contract
+is documented at
+<https://docs.tavily.com/documentation/api-reference/endpoint/search>;
 re-check it before relying on the adapter in production.
+
+**Free-tier and limitations.** Tavily's free-tier allowance is limited and
+subject to Tavily's current pricing and terms; it is not unlimited or
+guaranteed to remain free. See <https://www.tavily.com/pricing> for the
+current allowance. The adapter requests `search_depth=basic` to keep each
+search at the documented base credit cost. Search result titles, snippets,
+and URLs are third-party content, not verified facts. Tavily may omit the
+optional per-result `id`; discovery then deduplicates on the normalized
+domain. Automated tests never call Tavily and require no key; only the manual
+command above exercises the live API.
 
 ## 5. Run database migrations
 
@@ -201,10 +219,11 @@ Example response (`SEARCH_PROVIDER=fake` returns no results):
 }
 ```
 
-With `SEARCH_PROVIDER=brave`, `results` contains persisted candidates with
-`name`, `website_url`, `domain`, `description`, `provider`, `source_url`,
-and timestamps. Repeating a search does not create duplicates; it reports
-`created: 0` and fills only previously missing fields.
+With `SEARCH_PROVIDER=tavily` and a configured key, `results` contains
+persisted candidates with `name`, `website_url`, `domain`, `description`,
+`provider`, `provider_result_id`, `source_url`, and timestamps. Repeating a
+search does not create duplicates; it reports `created: 0` and fills only
+previously missing fields.
 
 ## 6. Start the development server
 
@@ -242,13 +261,15 @@ pytest tests/unit
 pytest tests/integration
 ```
 
-Tests are deterministic, use no network, no live database, and no Mistral
-credentials. PostgreSQL-backed integration tests (discovery persistence,
-API persistence, migrations) run only when `TEST_DATABASE_URL` points at a
+Tests are deterministic, use no network, no live database, and no Tavily or
+Mistral credentials. Tavily is exercised only through HTTPX mock transports;
+set `SEARCH_PROVIDER=fake` or inject `FakeSearchProvider` for credential-free
+runs. PostgreSQL-backed integration tests (discovery persistence, API
+persistence, migrations) run only when `TEST_DATABASE_URL` points at a
 **disposable** database; otherwise they are skipped:
 
 ```powershell
-$env:TEST_DATABASE_URL = "postgresql+psycopg://postgres:omkar2005@localhost:5432/explee_test"
+$env:TEST_DATABASE_URL = "postgresql+psycopg://explee:change-me@localhost:5432/explee_test"
 pytest -q
 ```
 
@@ -287,7 +308,7 @@ app/
   services/          business logic
     discovery.py          search -> normalize -> dedupe -> persist
     discovery_urls.py     URL/domain normalization
-    providers/            SearchProvider protocol + brave/fake adapters
+    providers/            SearchProvider protocol + tavily/fake adapters
 alembic/             migration environment (URL from app settings)
 docs/                architecture and phased plan
 scripts/             operational helpers (check_db)

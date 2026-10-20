@@ -9,11 +9,16 @@ from __future__ import annotations
 import logging
 
 from app.config import Settings
-from app.services.providers.brave import BraveSearchProvider
 from app.services.providers.fake import FakeSearchProvider
 from app.services.providers.search import SearchProvider
+from app.services.providers.tavily import TavilySearchProvider
 
-__all__ = ["FakeSearchProvider", "SearchProvider", "build_search_provider"]
+__all__ = [
+    "FakeSearchProvider",
+    "SearchProvider",
+    "TavilySearchProvider",
+    "build_search_provider",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -21,20 +26,22 @@ logger = logging.getLogger(__name__)
 def build_search_provider(settings: Settings) -> SearchProvider:
     """Build the provider selected by ``SEARCH_PROVIDER``.
 
-    Raises ``ValueError`` when a real provider is selected without its
-    credentials; settings validation normally catches this at startup.
+    A missing Tavily key does not fail construction: the app can start and
+    serve unrelated routes, and the provider raises a clear configuration
+    error when discovery actually requests a search. Selection never falls
+    back to another provider silently.
     """
     if settings.search_provider == "fake":
         return FakeSearchProvider()
 
-    if settings.search_provider == "brave":
-        api_key = settings.search_api_key
-        if api_key is None or not api_key.get_secret_value().strip():
-            raise ValueError(
-                "SEARCH_API_KEY is required when SEARCH_PROVIDER=brave."
-            )
-        return BraveSearchProvider(
-            api_key.get_secret_value(),
+    if settings.search_provider == "tavily":
+        api_key = (
+            settings.tavily_api_key.get_secret_value()
+            if settings.tavily_api_key is not None
+            else None
+        )
+        return TavilySearchProvider(
+            api_key,
             timeout_seconds=settings.search_timeout_seconds,
             max_retries=settings.search_max_retries,
         )

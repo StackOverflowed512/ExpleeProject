@@ -14,6 +14,13 @@ class SearchProviderError(Exception):
     http_status = 502
 
 
+class ProviderConfigurationError(SearchProviderError):
+    """The selected provider is missing required configuration."""
+
+    code = "provider_not_configured"
+    http_status = 503
+
+
 class ProviderAuthenticationError(SearchProviderError):
     """The provider rejected the configured credentials."""
 

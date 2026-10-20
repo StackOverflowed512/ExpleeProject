@@ -36,7 +36,11 @@ router = APIRouter(tags=["discovery"])
                 "(error envelope)."
             )
         },
-        503: {"description": "Search provider rate limited (error envelope)."},
+        503: {
+            "description": (
+                "Search provider rate limited or not configured (error envelope)."
+            )
+        },
         504: {"description": "Search provider timed out (error envelope)."},
         500: {"description": "Persistence failure (error envelope)."},
     },

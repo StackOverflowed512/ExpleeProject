@@ -3,7 +3,8 @@
 Settings are read from environment variables first, then from the project
 root ``.env`` file, then from the defaults defined below. Environment
 variable names are case-insensitive and mirror the field names
-(``APP_ENV``, ``DATABASE_URL``, ``LOG_LEVEL``).
+(``APP_ENV``, ``DATABASE_URL``, ``LOG_LEVEL``, ``SEARCH_PROVIDER``,
+``TAVILY_API_KEY``).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import Field, PostgresDsn, SecretStr, field_validator, model_validator
+from pydantic import Field, PostgresDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT: Final = Path(__file__).resolve().parent.parent
@@ -20,7 +21,7 @@ ENV_FILE: Final = PROJECT_ROOT / ".env"
 
 AppEnvironment = Literal["development", "testing", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-SearchProviderName = Literal["fake", "brave"]
+SearchProviderName = Literal["fake", "tavily"]
 
 DEFAULT_DATABASE_URL: Final = (
     "postgresql+psycopg://postgres:postgres@localhost:5432/explee"
@@ -53,16 +54,20 @@ class Settings(BaseSettings):
 
     # --- Explorer search provider -------------------------------------
     search_provider: SearchProviderName = Field(
-        default="fake",
+        default="tavily",
         description=(
-            "Search provider used by Explorer discovery. 'fake' returns no "
-            "results and needs no credentials; 'brave' calls the Brave "
-            "Search API."
+            "Search provider used by Explorer discovery. 'tavily' calls the "
+            "Tavily Search API and requires TAVILY_API_KEY; 'fake' returns no "
+            "results and needs no credentials."
         ),
     )
-    search_api_key: SecretStr | None = Field(
+    tavily_api_key: SecretStr | None = Field(
         default=None,
-        description="API key for the selected search provider.",
+        description=(
+            "Tavily Search API key. Optional at startup so the app and "
+            "unrelated tests run without credentials; discovery raises a "
+            "clear provider error when Tavily is selected without a key."
+        ),
     )
     search_timeout_seconds: float = Field(
         default=10.0,
@@ -87,6 +92,16 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
 
+    @field_validator("tavily_api_key", mode="before")
+    @classmethod
+    def _normalize_tavily_api_key(cls, value: object) -> object:
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
     @field_validator("database_url")
     @classmethod
     def _require_psycopg_driver(cls, value: PostgresDsn) -> PostgresDsn:
@@ -95,16 +110,6 @@ class Settings(BaseSettings):
                 "DATABASE_URL must use the 'postgresql+psycopg' driver (psycopg 3)."
             )
         return value
-
-    @model_validator(mode="after")
-    def _require_provider_credentials(self) -> "Settings":
-        if self.search_provider == "brave":
-            key = self.search_api_key
-            if key is None or not key.get_secret_value().strip():
-                raise ValueError(
-                    "SEARCH_API_KEY is required when SEARCH_PROVIDER=brave."
-                )
-        return self
 
 
 @lru_cache(maxsize=1)

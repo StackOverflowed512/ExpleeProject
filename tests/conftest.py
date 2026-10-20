@@ -26,7 +26,7 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "DATABASE_URL",
         "LOG_LEVEL",
         "SEARCH_PROVIDER",
-        "SEARCH_API_KEY",
+        "TAVILY_API_KEY",
         "SEARCH_TIMEOUT_SECONDS",
         "SEARCH_MAX_RETRIES",
     ):
