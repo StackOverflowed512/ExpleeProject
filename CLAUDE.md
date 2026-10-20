@@ -26,6 +26,10 @@ Instructions for AI-assisted sessions working in this repository.
   Add new settings there with types, defaults, and validation.
 - Errors use the envelope in `app/errors.py`; raise `AppError` with a
   stable snake_case `code`.
+- External capabilities go behind protocols. Discovery selects a
+  `SearchProvider` through `SEARCH_PROVIDER`: `tavily` is the real adapter
+  and `fake` is the credential-free/test adapter. Business logic never reads
+  vendor payloads.
 - Match the existing naming, typing, and docstring style. Python 3.12+;
   full type hints on public functions.
 
@@ -35,8 +39,8 @@ Instructions for AI-assisted sessions working in this repository.
 - Write tests for every new behavior:
   - `tests/unit/` — no network, no database.
   - `tests/integration/` — full ASGI app through HTTPX.
-  - Tests must be deterministic and must not require real Mistral or email
-    credentials.
+  - Tests must be deterministic and must not require real Tavily, Mistral,
+    or email credentials. Use HTTPX mock transports or fakes for providers.
 - Never hardcode secrets. Read them from settings; never log credentials,
   tokens, or full connection URLs.
 - Never invent external-provider data. Persist provenance with every fact

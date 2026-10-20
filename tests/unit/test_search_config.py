@@ -8,34 +8,49 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
-def test_search_defaults_to_fake_provider() -> None:
+def test_search_defaults_to_tavily_without_a_key() -> None:
     settings = Settings(_env_file=None)
-    assert settings.search_provider == "fake"
-    assert settings.search_api_key is None
+    assert settings.search_provider == "tavily"
+    assert settings.tavily_api_key is None
     assert settings.search_timeout_seconds == 10.0
     assert settings.search_max_retries == 2
 
 
-def test_brave_requires_an_api_key() -> None:
-    with pytest.raises(ValidationError) as excinfo:
-        Settings(_env_file=None, search_provider="brave")
-
-    assert "SEARCH_API_KEY" in str(excinfo.value)
-
-
-def test_brave_rejects_blank_api_key() -> None:
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, search_provider="brave", search_api_key="   ")
+def test_tavily_is_allowed_without_a_key_at_startup() -> None:
+    settings = Settings(_env_file=None, search_provider="tavily")
+    assert settings.search_provider == "tavily"
+    assert settings.tavily_api_key is None
 
 
-def test_brave_accepts_a_key_and_masks_it() -> None:
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t "])
+def test_blank_tavily_key_is_normalized_to_none(blank: str) -> None:
     settings = Settings(
-        _env_file=None, search_provider="brave", search_api_key="secret-value"
+        _env_file=None, search_provider="tavily", tavily_api_key=blank
+    )
+    assert settings.tavily_api_key is None
+
+
+def test_tavily_key_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-env")
+
+    settings = Settings(_env_file=None, search_provider="tavily")
+
+    assert settings.tavily_api_key is not None
+    assert settings.tavily_api_key.get_secret_value() == "tvly-from-env"
+
+
+def test_tavily_accepts_a_key_and_masks_it() -> None:
+    settings = Settings(
+        _env_file=None,
+        search_provider="tavily",
+        tavily_api_key="secret-value",
     )
 
-    assert settings.search_provider == "brave"
-    assert settings.search_api_key is not None
-    assert settings.search_api_key.get_secret_value() == "secret-value"
+    assert settings.search_provider == "tavily"
+    assert settings.tavily_api_key is not None
+    assert settings.tavily_api_key.get_secret_value() == "secret-value"
     assert "secret-value" not in repr(settings)
 
 

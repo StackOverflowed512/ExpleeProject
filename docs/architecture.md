@@ -49,13 +49,17 @@ never read the developer's `.env`.
 
 ### Explorer
 
-1. **Discovery** — implemented in P1. A `SearchProvider` protocol
+1. **Discovery** — implemented in P1; the real adapter moved from Brave to
+   Tavily in P1.1. A `SearchProvider` protocol
    (`app/services/providers/search.py`) accepts a natural-language query and
    a bounded limit and returns normalized `SearchResultItem` records. Two
-   adapters exist: `brave` (real API) and `fake` (deterministic, used by
-   tests and the credential-free default). Selection happens through
+   adapters exist: `tavily` (default real API) and `fake` (deterministic,
+   used by tests and credential-free runs). Selection happens through
    `SEARCH_PROVIDER`; discovery code never imports a vendor SDK or reads a
-   vendor payload.
+   vendor payload. `TAVILY_API_KEY` is optional at startup and validated by
+   the adapter when a search is requested, so health checks and unrelated
+   tests run without credentials. A missing key raises
+   `provider_not_configured`; selection never falls back silently.
 2. **Research** — fetch and extract public website content through a
    `WebsiteFetcher` protocol; store extracted facts with their source URL.
    Not implemented yet.
@@ -89,10 +93,15 @@ provider name recorded) or absent.
   `NULL` (website URL, description). First-seen name, source URL, and known
   values are never overwritten, preserving provenance.
 - **Error mapping.** Provider failures use the shared envelope:
-  `provider_authentication_failed` (502), `provider_unavailable` (502),
-  `provider_rate_limited` (503), `provider_timeout` (504), and
-  `discovery_persistence_failed` (500). Messages never contain keys or
-  provider payloads.
+  `provider_not_configured` (503), `provider_authentication_failed` (502),
+  `provider_unavailable` (502), `provider_rate_limited` (503),
+  `provider_timeout` (504), and `discovery_persistence_failed` (500).
+  Messages never contain keys or provider payloads.
+- **Retry policy.** The Tavily adapter retries only transient failures
+  (429, 5xx, timeouts, connection errors) with bounded exponential backoff
+  and a bounded `Retry-After`. Authentication failures, other 4xx responses,
+  and malformed payloads are not retried. The adapter requests
+  `search_depth=basic` to keep cost and latency predictable.
 
 ### Outreach Agent
 
