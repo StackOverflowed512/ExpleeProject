@@ -359,15 +359,95 @@ model and API; search/filtering of saved prospects; deduplication rules.
 ## P4 — Outreach: campaigns and drafts
 
 **Scope:** campaign model built from saved prospects; Mistral adapter behind
-an `AIProvider` protocol; draft generation with versioned prompts; draft
-states.
+the `DraftGenerator` protocol (the earlier `AIProvider` name was not used);
+draft generation with versioned prompts; draft states.
+
+**Implementation notes (2026-10-24)**
+
+- Campaigns: `campaigns` and `campaign_prospects` (composite PK prevents
+  duplicate links, `position` keeps selection order). Only existing saved
+  prospects can be added (422 `invalid_prospect_ids`). Campaign text that
+  feeds the prompt may not contain email addresses or placeholders.
+- Generator: `DraftGenerator` protocol in
+  `app/services/providers/drafts.py`. The Mistral adapter
+  (`mistral.py`, HTTPX, no SDK, JSON mode, bounded timeouts and retries,
+  safe error mapping) and a deterministic fake are selected by
+  `DRAFT_GENERATOR`. `MISTRAL_API_KEY` is optional at startup; a missing
+  key yields `provider_not_configured` (503).
+- Prompt: `outreach-draft/v1` in `app/services/outreach_prompt.py`. It is a
+  pure, deterministic function with a SHA-256 audit hash. Prospect data is
+  sanitized, length-capped, JSON-escaped, and fenced as untrusted, and the
+  model is told not to invent facts. Output is validated independently
+  (subject and body required, length bounds, no email addresses, no
+  placeholders).
+- Drafts: `outreach_drafts`. `state` is constrained to `pending`. Rows
+  record the prompt version and hash, provider, model, safe response
+  metadata (response ID, finish reason, token usage; not the raw body),
+  provenance (candidate, qualification, research, evidence sources), and
+  a `revision` per campaign prospect.
+- Generation: the read session closes before provider calls, and each
+  validated draft is committed in its own transaction. At most 10 drafts
+  are generated per request (`remaining` reports the rest). Without
+  `regenerate`, prospects that already have a draft are skipped
+  (idempotent retries). With `regenerate`, a new revision is added and
+  never overwrites. A unique constraint plus `ON CONFLICT DO NOTHING`
+  handles races.
+- API: `POST/GET /campaigns`, `GET /campaigns/{id}`,
+  `POST/GET /campaigns/{id}/drafts`, `GET /drafts/{id}`. There is no
+  send, approve, or email code; a test asserts that no module imports an
+  email library and that no route can send or approve.
+- Migration `0005_campaigns_drafts` (additive). Its CHECK constraints are
+  named with `op.f()` so they match the models.
 
 **Exit criteria**
 
-- Mistral is reachable only through the adapter; tests use a fake provider.
-- Drafts persist prompt version, model, and raw response metadata.
-- Generation failures never produce a partially saved draft.
-- No credentials are required to run the suite.
+- [x] Mistral is reachable only through the adapter, and tests use a fake.
+      Adapter behaviour is unit-tested with HTTPX mock transports.
+- [x] Drafts persist the prompt version, model, and response metadata.
+      Only safe fields are stored; the raw provider body is deliberately
+      not persisted.
+- [x] Generation failures never produce a partially saved draft. This is
+      tested for provider errors, missing key, malformed or empty output,
+      mid-batch failure, and database rollback.
+- [x] No credentials are required to run the suite.
+- [x] Migration `0005` upgrades a `0004` database containing candidates,
+      research, qualifications, and a saved prospect without loss, and
+      downgrades back (automated on `explee_test`). `alembic upgrade head`
+      (`0001 -> 0005`) followed by `alembic check` on a freshly reset
+      `explee_test` reported "No new upgrade operations detected"
+      (2026-10-24).
+- [x] Full suite (2026-10-24, Python 3.14.8, PostgreSQL 17,
+      `TEST_DATABASE_URL` → `explee_test`): 777 passed, with the existing
+      Starlette/httpx deprecation warning. Without a test database:
+      593 passed, 184 skipped. Phase 0–3 regression tests pass;
+      fixtures were only extended for the new tables and settings.
+- [x] No email sending, approval endpoints, UI, authentication, Docker, or
+      background workers; no new dependencies.
+
+**Not verified**
+
+- No live Mistral request was made: no `MISTRAL_API_KEY` was configured in
+  this environment. The request and response contract follows the official
+  API reference and is covered by mocked tests; a live check remains
+  manual.
+- Migrations were not applied to the configured `explee` development
+  database. Run `alembic upgrade head` there before using the new
+  endpoints.
+- True concurrent generation from two processes was not exercised; the
+  race is simulated in one process, and the unique constraint is tested
+  directly.
+
+**Known issue (pre-existing, not changed in P4)**
+
+- Migrations `0002`–`0004` created their CHECK constraints with doubled
+  names (for example
+  `ck_company_qualifications_ck_company_qualifications_score_range`, some
+  truncated with a hash). Alembic applies the naming convention to names
+  that were already final. The constraints are enforced, but their names
+  differ from the models and from `create_all` databases. `alembic check`
+  does not compare CHECK constraints, so it does not report this. A
+  dedicated migration renaming them is a suggested follow-up; P4 leaves
+  the Phase 2/3 schema untouched.
 
 ## P5 — Outreach: approval and delivery
 

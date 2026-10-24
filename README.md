@@ -7,11 +7,13 @@ Personal AI-powered sales intelligence and outreach platform. Two modules:
 - **Outreach Agent** — build campaigns from saved prospects, generate drafts,
   obtain explicit human approval, and send through a configurable provider.
 
-This repository currently contains **Phases 0, 1, 1.1, 2, and 3**:
+This repository currently contains **Phases 0, 1, 1.1, 2, 3, and 4**:
 application skeleton, configuration, health endpoint, error contract,
 database wiring, migrations, Explorer company discovery backed by Tavily
-Search, website research and enrichment, deterministic qualification, and
-saved prospects with search. Outreach features are not implemented yet.
+Search, website research and enrichment, deterministic qualification,
+saved prospects with search, and outreach campaigns with Mistral-generated
+drafts kept in `pending` state. Approval and email delivery (Phase 5) are
+not implemented, so nothing can be sent.
 
 ## Prerequisites
 
@@ -190,19 +192,23 @@ Revisions:
 | `0002_company_research` | P2 | `company_research` (FK to candidates, `ON DELETE CASCADE`) |
 | `0003_qualification_prospects` | P3 | `company_qualifications` (append-only runs) and `saved_prospects` (unique per candidate) |
 | `0004_qualification_preliminary` | P3 | widens the qualification status check to allow `preliminary` (no data changes) |
+| `0005_campaigns_drafts` | P4 | `campaigns`, `campaign_prospects` (unique per campaign), and `outreach_drafts` (`pending` only) |
 
 Existing Phase 1 and Phase 2 databases upgrade in place with
 `alembic upgrade head`. Every revision is additive, so existing candidates
 and research are untouched. To roll back only Phase 3, run
 `alembic downgrade 0002_company_research`. That drops the qualification and
 prospect tables **and their data**. Downgrading `0004` alone is refused
-while `preliminary` runs exist. Verify the schema afterwards:
+while `preliminary` runs exist. To roll back only Phase 4, run
+`alembic downgrade 0004_qualification_preliminary`, which drops the
+campaign and draft tables **and their data**. Verify the schema afterwards:
 
 ```powershell
 psql -U postgres -h localhost -d explee -c "\d company_candidates"
 psql -U postgres -h localhost -d explee -c "\d company_research"
 psql -U postgres -h localhost -d explee -c "\d company_qualifications"
 psql -U postgres -h localhost -d explee -c "\d saved_prospects"
+psql -U postgres -h localhost -d explee -c "\d outreach_drafts"
 ```
 
 Useful commands:
@@ -389,6 +395,100 @@ and `prospect_not_qualified` (409), `qualification_not_found` and
 
 Unknown parameters are rejected with 422.
 
+## 5e. Create campaigns and generate outreach drafts
+
+Phase 4 turns saved prospects into **pending** email drafts for later human
+review. **Nothing is sent**: there is no email provider, approval endpoint,
+or sending path until Phase 5.
+
+**Configure the draft generator** in `.env` (see `.env.example`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DRAFT_GENERATOR` | `mistral` | `mistral` (real API) or `fake` (deterministic, no network) |
+| `MISTRAL_API_KEY` | none | Required only for real generation; create one at <https://console.mistral.ai/> |
+| `MISTRAL_MODEL` | `mistral-small-latest` | Any Mistral chat model ID |
+| `MISTRAL_TIMEOUT_SECONDS` | `30` | Per-request timeout (0–120) |
+| `MISTRAL_MAX_RETRIES` | `1` | Retries for 429/5xx/timeouts (0–3) |
+
+The key is optional at startup. With `DRAFT_GENERATOR=mistral` and no key,
+draft generation returns `provider_not_configured` (HTTP 503) and saves
+nothing. For credential-free runs set `DRAFT_GENERATOR=fake`. Each draft
+costs one Mistral API call; check Mistral's current pricing and limits.
+
+```powershell
+# Create a campaign from saved prospect IDs (order is kept)
+$campaign = @{
+  name = "Q4 fleet operators"
+  product = "RouteWise"
+  value_proposition = "RouteWise cuts dispatch planning time with live route suggestions."
+  target_audience = "Operations leaders at logistics software companies"
+  call_to_action = "Would a 20-minute call next week be useful?"
+  tone = "professional"
+  sender_name = "Alex"
+  sender_company = "RouteWise"
+  prospect_ids = @(1, 2)
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/campaigns -ContentType "application/json" -Body $campaign | ConvertTo-Json -Depth 6
+
+# List campaigns and read one
+Invoke-RestMethod "http://127.0.0.1:8000/campaigns?limit=20" | ConvertTo-Json -Depth 4
+Invoke-RestMethod http://127.0.0.1:8000/campaigns/1 | ConvertTo-Json -Depth 6
+
+# Generate drafts (skips prospects that already have one; up to 10 per call)
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/campaigns/1/drafts -ContentType "application/json" -Body '{}' | ConvertTo-Json -Depth 6
+
+# Add a new revision for one prospect (earlier drafts are kept)
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/campaigns/1/drafts -ContentType "application/json" -Body '{"saved_prospect_ids": [2], "regenerate": true}' | ConvertTo-Json -Depth 6
+
+# List a campaign's drafts and read one
+Invoke-RestMethod "http://127.0.0.1:8000/campaigns/1/drafts?limit=20" | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:8000/drafts/1 | ConvertTo-Json -Depth 6
+```
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `POST /campaigns` | 201 with the campaign and its prospects. IDs must be existing **saved prospects** (422 `invalid_prospect_ids`); duplicates and unknown fields are rejected (422). |
+| `GET /campaigns` | Newest first; `limit` 1–100, `offset`, `total`. |
+| `GET /campaigns/{id}` | Configuration plus prospects in selection order. |
+| `POST /campaigns/{id}/drafts` | Body `{"saved_prospect_ids"?: [...], "regenerate"?: false}`. Returns `results` (`generated` or `existing` per prospect), `batch_limit` (10), and `remaining`. |
+| `GET /campaigns/{id}/drafts` | Campaign order, then revision; `limit`, `offset`, optional `saved_prospect_id`. |
+| `GET /drafts/{id}` | One draft with its audit trail. |
+
+**How drafts are generated.** The prompt (`outreach-draft/v1`) is built
+deterministically from the campaign and the prospect's stored data:
+
+- company name and domain;
+- the search snippet;
+- the website title and opening text;
+- matched market terms and website evidence from the qualification.
+
+Prospect data is treated as untrusted data, not instructions. The model is
+told never to invent people, contact details, numbers, customers,
+integrations, or relationships, and to write a generic message when data is
+thin. Every answer must be JSON with a subject and body. It's validated
+before anything is saved and rejected (`provider_invalid_output`, 502) if
+it's empty, malformed, truncated, or contains an email address or a
+placeholder such as `[Name]`.
+
+**Repeat and failure behaviour.**
+
+- Each draft is saved in its own transaction only after validation, so a
+  provider failure never leaves a partial draft.
+- If the provider fails partway, the error envelope lists
+  `generated_draft_ids` and `failed_saved_prospect_id`. Calling again skips
+  existing drafts and continues where it stopped.
+- `regenerate: true` adds a new revision instead of overwriting.
+- Provider errors: `provider_not_configured` (503),
+  `provider_rate_limited` (503), `provider_timeout` (504), and
+  `provider_authentication_failed`, `provider_unavailable` and
+  `provider_invalid_output` (502).
+
+Each draft records its prompt version, a SHA-256 of the exact prompt,
+provider, model, safe response metadata (response ID, finish reason, token
+usage), and provenance: candidate, qualification, research, and the
+evidence sources used.
+
 ## 6. Start the development server
 
 ```powershell
@@ -426,11 +526,13 @@ pytest tests/integration
 ```
 
 Tests are deterministic, use no network, no live database, and no Tavily or
-Mistral credentials. Tavily and the website fetcher are exercised only
-through HTTPX mock transports, injected DNS resolvers, and an HTML fixture in
-`tests/fixtures/websites/`. Test settings use `SEARCH_PROVIDER=fake` and
-`WEBSITE_FETCHER=fake`. PostgreSQL-backed integration tests (discovery and
-research persistence, API persistence, migrations) run only when
+Mistral credentials. Tavily, the website fetcher, and the Mistral adapter
+are exercised only through HTTPX mock transports, injected DNS resolvers,
+fakes, and an HTML fixture in `tests/fixtures/websites/`. Test settings use
+`SEARCH_PROVIDER=fake`, `WEBSITE_FETCHER=fake`, and `DRAFT_GENERATOR=fake`;
+no test calls the real Mistral API. PostgreSQL-backed integration tests
+(discovery, research, qualification, campaign and draft persistence, API
+persistence, migrations) run only when
 `TEST_DATABASE_URL` points at a **disposable** database; otherwise they are
 skipped:
 
@@ -473,9 +575,11 @@ app/
     company_research.py   website research attempts per candidate
     company_qualification.py  append-only qualification runs
     saved_prospect.py     saved prospects (one per candidate)
+    campaign.py           campaigns and their selected prospects
+    outreach_draft.py     generated drafts (pending, audited)
   schemas/           Pydantic request/response schemas
   routers/           thin HTTP routes (health, discovery, research,
-                     qualification, prospects)
+                     qualification, prospects, campaigns, drafts)
   services/          business logic
     discovery.py          search -> normalize -> dedupe -> persist
     discovery_urls.py     URL/domain normalization
@@ -484,8 +588,12 @@ app/
     qualification_rules.py  pure, versioned scoring rules
     qualification.py      run + persist qualification, history
     prospects.py          eligibility-gated save, search, retrieval
-    providers/            SearchProvider (tavily/fake) and WebsiteFetcher
-                          (httpx/fake) adapters, SSRF checks, HTML text
+    campaigns.py          campaigns from saved prospects
+    outreach_prompt.py    versioned, deterministic draft prompt
+    drafts.py             generate -> validate -> persist pending drafts
+    providers/            SearchProvider (tavily/fake), WebsiteFetcher
+                          (httpx/fake), DraftGenerator (mistral/fake),
+                          SSRF checks, HTML text
 alembic/             migration environment (URL from app settings)
 docs/                architecture and phased plan
 scripts/             operational helpers (check_db)

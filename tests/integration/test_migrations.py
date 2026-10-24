@@ -21,12 +21,16 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.config import PROJECT_ROOT
 from app.models import Base
 
-HEAD_REVISION = "0004_qualification_preliminary"
+HEAD_REVISION = "0005_campaigns_drafts"
+PHASE3_PRELIMINARY_REVISION = "0004_qualification_preliminary"
 PHASE3_REVISION = "0003_qualification_prospects"
 PHASE2_REVISION = "0002_company_research"
 PHASE1_REVISION = "0001_company_candidates"
 
 _DROP_SCHEMA = text(
+    "DROP TABLE IF EXISTS outreach_drafts CASCADE; "
+    "DROP TABLE IF EXISTS campaign_prospects CASCADE; "
+    "DROP TABLE IF EXISTS campaigns CASCADE; "
     "DROP TABLE IF EXISTS saved_prospects CASCADE; "
     "DROP TABLE IF EXISTS company_qualifications CASCADE; "
     "DROP TABLE IF EXISTS company_research CASCADE; "
@@ -555,6 +559,104 @@ def test_downgrade_refuses_to_drop_preliminary_rows(migration_database: str) -> 
             )
         assert revision == HEAD_REVISION
         assert preliminary == 1
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+
+# -- 0005: campaigns and outreach drafts --------------------------------------------
+def test_outreach_tables_and_constraints_exist(inspector: Engine) -> None:
+    schema = inspect(inspector)
+    tables = set(schema.get_table_names())
+    assert {"campaigns", "campaign_prospects", "outreach_drafts"} <= tables
+
+    assert schema.get_pk_constraint("campaign_prospects")["constrained_columns"] == [
+        "campaign_id",
+        "saved_prospect_id",
+    ]
+    uniques = {
+        u["name"]: u["column_names"]
+        for u in schema.get_unique_constraints("outreach_drafts")
+    }
+    assert uniques["uq_outreach_drafts_campaign_prospect_revision"] == [
+        "campaign_id",
+        "saved_prospect_id",
+        "revision",
+    ]
+    foreign_keys = {fk["name"]: fk for fk in schema.get_foreign_keys("outreach_drafts")}
+    composite = foreign_keys["fk_outreach_drafts_campaign_prospect"]
+    assert composite["referred_table"] == "campaign_prospects"
+    assert composite["constrained_columns"] == ["campaign_id", "saved_prospect_id"]
+    assert composite["options"].get("ondelete") == "CASCADE"
+    # Exact names: the migration must match the model's naming convention
+    # (no doubled "ck_<table>_ck_<table>_" prefix).
+    assert {c["name"] for c in schema.get_check_constraints("outreach_drafts")} == {
+        "ck_outreach_drafts_state_valid",
+        "ck_outreach_drafts_revision_positive",
+        "ck_outreach_drafts_subject_not_blank",
+        "ck_outreach_drafts_body_not_blank",
+    }
+    assert {c["name"] for c in schema.get_check_constraints("campaigns")} == {
+        "ck_campaigns_tone_valid"
+    }
+    assert {c["name"] for c in schema.get_check_constraints("campaign_prospects")} == {
+        "ck_campaign_prospects_position_non_negative"
+    }
+
+
+def test_upgrade_from_phase3_head_preserves_all_rows(migration_database: str) -> None:
+    """A database at 0004 with Phase 1-3 data upgrades to 0005 intact."""
+    config = _alembic_config(migration_database)
+    engine = create_engine(migration_database)
+    count_all = text(
+        "SELECT (SELECT count(*) FROM company_candidates), "
+        "(SELECT count(*) FROM company_research), "
+        "(SELECT count(*) FROM company_qualifications), "
+        "(SELECT count(*) FROM saved_prospects)"
+    )
+    try:
+        with engine.begin() as connection:
+            connection.execute(_DROP_SCHEMA)
+        command.upgrade(config, PHASE3_PRELIMINARY_REVISION)
+        with engine.begin() as connection:
+            assert "campaigns" not in inspect(connection).get_table_names()
+            candidate_id = _insert_candidate(connection, "phase4.example")
+            connection.execute(
+                _INSERT_RESEARCH, {"cid": candidate_id, "outcome": "success", "failure": None}
+            )
+            qualification_id = connection.execute(
+                _INSERT_QUALIFICATION, {"cid": candidate_id, "status": "qualified", "score": 90}
+            ).scalar_one()
+            connection.execute(
+                _INSERT_QUALIFICATION,
+                {"cid": candidate_id, "status": "preliminary", "score": 100},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO saved_prospects (candidate_id, qualification_id) "
+                    "VALUES (:c, :q)"
+                ),
+                {"c": candidate_id, "q": qualification_id},
+            )
+            before = tuple(connection.execute(count_all).one())
+
+        command.upgrade(config, "head")
+        with engine.begin() as connection:
+            after = tuple(connection.execute(count_all).one())
+            campaigns = connection.execute(text("SELECT count(*) FROM campaigns")).scalar_one()
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert before == after == (1, 1, 2, 1)
+        assert campaigns == 0
+        assert revision == HEAD_REVISION
+
+        command.downgrade(config, PHASE3_PRELIMINARY_REVISION)
+        with engine.begin() as connection:
+            tables = set(inspect(connection).get_table_names())
+            restored = tuple(connection.execute(count_all).one())
+        assert not {"campaigns", "campaign_prospects", "outreach_drafts"} & tables
+        assert restored == (1, 1, 2, 1)
     finally:
         command.upgrade(config, "head")
         engine.dispose()
