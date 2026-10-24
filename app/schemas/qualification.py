@@ -300,6 +300,12 @@ class QualificationRecord(BaseModel):
     matched_signals: list[str] = Field(
         description="Target keywords and locations found (positive signals)."
     )
+    unconfirmed_signals: list[str] = Field(
+        description=(
+            "Target terms found only in search-result data that the complete "
+            "website page did not confirm; reported but not counted."
+        )
+    )
     missing_signals: list[str] = Field(
         description="Target keywords and locations not found in sourced data."
     )

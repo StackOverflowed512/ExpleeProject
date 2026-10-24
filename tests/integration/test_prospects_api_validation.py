@@ -108,3 +108,28 @@ def test_openapi_documents_phase3_endpoints(client: TestClient) -> None:
     assert "get" in paths["/prospects/{prospect_id}"]
     criteria = schema["components"]["schemas"]["QualificationCriteria"]
     assert criteria["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("limit", ["0", "101", "-1", "abc"])
+def test_invalid_history_limit(client: TestClient, limit: str) -> None:
+    _assert_validation_error(
+        client.get("/companies/1/qualifications", params={"limit": limit})
+    )
+
+
+def test_openapi_documents_history_contract(client: TestClient) -> None:
+    schema = client.get("/openapi.json").json()
+    history = schema["components"]["schemas"]["QualificationHistoryResponse"]
+    assert set(history["properties"]) == {"candidate_id", "total", "limit", "latest", "history"}
+    assert {"candidate_id", "total", "limit", "history"} <= set(history["required"])
+    record = schema["components"]["schemas"]["QualificationRecord"]
+    assert {
+        "matched_signals",
+        "unconfirmed_signals",
+        "missing_signals",
+        "disqualifying_signals",
+    } <= set(record["required"])
+    parameters = schema["paths"]["/companies/{candidate_id}/qualifications"]["get"]["parameters"]
+    limit = next(p for p in parameters if p["name"] == "limit")
+    assert (limit["schema"]["minimum"], limit["schema"]["maximum"]) == (1, 100)
+    assert limit["schema"]["default"] == 20

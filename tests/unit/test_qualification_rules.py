@@ -98,7 +98,8 @@ def test_default_criteria_are_documented_values() -> None:
     assert criteria.target_tlds == []
     assert criteria.excluded_keywords == []
     assert criteria.threshold == DEFAULT_THRESHOLD == 60
-    assert criteria.min_evidence_coverage == DEFAULT_MIN_EVIDENCE_COVERAGE == 0.5
+    assert criteria.min_evidence_coverage == pytest.approx(DEFAULT_MIN_EVIDENCE_COVERAGE)
+    assert DEFAULT_MIN_EVIDENCE_COVERAGE == pytest.approx(0.5)
 
 
 def test_terms_are_normalized_deduplicated_and_sorted() -> None:
@@ -217,7 +218,7 @@ def test_industry_absence_with_complete_research_is_not_matched() -> None:
     assert factor.signals_not_found == ["saas"]
     assert evaluation.status == "unqualified"
     assert evaluation.score == 0
-    assert evaluation.evidence_coverage == 1.0
+    assert evaluation.evidence_coverage == pytest.approx(1.0)
 
 
 def test_industry_absence_without_research_is_unknown() -> None:
@@ -227,7 +228,7 @@ def test_industry_absence_without_research_is_unknown() -> None:
     assert "no usable website research" in factor.explanation
     assert evaluation.status == "insufficient_evidence"
     assert evaluation.score == 0
-    assert evaluation.evidence_coverage == 0.0
+    assert evaluation.evidence_coverage == pytest.approx(0.0)
 
 
 def test_industry_absence_with_partial_research_is_unknown() -> None:
@@ -350,7 +351,7 @@ def _industry_hit_location_miss() -> EnrichedCompany:
 def test_score_rounds_half_up() -> None:
     evaluation = evaluate(_industry_hit_location_miss(), _criteria(target_locations=["berlin"]))
     assert evaluation.score == 63
-    assert evaluation.evidence_coverage == 1.0
+    assert evaluation.evidence_coverage == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize(
@@ -397,7 +398,7 @@ def test_unknown_factors_do_not_lower_the_score() -> None:
         _partial_saas_page(), _criteria(target_locations=["berlin"], excluded_keywords=["casino"])
     )
     assert evaluation.score == 100
-    assert evaluation.evidence_coverage == 0.5
+    assert evaluation.evidence_coverage == pytest.approx(0.5)
     assert evaluation.status == "qualified"
 
 
@@ -591,7 +592,7 @@ def test_unknown_industry_with_low_coverage_minimum_is_insufficient() -> None:
         ),
     )
     assert _factor(evaluation, "industry_fit").result == "unknown"
-    assert evaluation.evidence_coverage == 0.3
+    assert evaluation.evidence_coverage == pytest.approx(0.3)
     assert evaluation.score == 100
     assert evaluation.status == "insufficient_evidence"
     assert "could not be evaluated" in evaluation.rationale
@@ -691,3 +692,118 @@ def test_v1_factor_payload_still_parses() -> None:
     assert factor.signals_unconfirmed == []
     assert factor.evidence_level is None
     assert factor.evidence[0].level is None
+
+
+# -- de-duplication of signals and evidence ----------------------------------------
+def _signal_lists(factor) -> list[str]:  # type: ignore[no-untyped-def]
+    return factor.signals_found + factor.signals_unconfirmed + factor.signals_not_found
+
+
+def test_term_in_every_source_is_reported_once_with_website_provenance() -> None:
+    company = _company(
+        name="SaaS Corp",
+        description="A SaaS company.",
+        website=_research("We sell SaaS. More SaaS. Even more SaaS.", title="SaaS for teams"),
+    )
+    industry = _factor(evaluate(company, _criteria()), "industry_fit")
+    assert industry.signals_found == ["saas"]
+    assert industry.signals_unconfirmed == []
+    assert industry.signals_not_found == []
+    (evidence,) = industry.evidence
+    # The first website source in the fixed order wins.
+    assert (evidence.source, evidence.level, evidence.research_id) == (
+        "research.page_title",
+        "website",
+        11,
+    )
+
+
+def test_term_in_several_discovery_sources_is_reported_once() -> None:
+    company = _company(name="SaaS Directory", description="Top SaaS picks; SaaS SaaS.")
+    industry = _factor(evaluate(company, _criteria()), "industry_fit")
+    assert industry.signals_found == ["saas"]
+    (evidence,) = industry.evidence
+    assert evidence.source == "candidate.name"
+
+
+def test_unconfirmed_term_in_several_sources_is_reported_once() -> None:
+    company = _company(
+        name="Best Software Companies",
+        description="Software, software, and more software.",
+        website=_research("Oak furniture.", title="Oakworks"),
+    )
+    industry = _factor(evaluate(company, _criteria(target_keywords=["software"])), "industry_fit")
+    assert industry.signals_unconfirmed == ["software"]
+    assert industry.signals_found == []
+    assert industry.signals_not_found == []
+    (evidence,) = industry.evidence
+    assert (evidence.source, evidence.counted) == ("candidate.name", False)
+
+
+def test_excluded_term_in_several_sources_is_reported_once() -> None:
+    company = _company(
+        name="Casino Reviews",
+        description="Online casino guide.",
+        website=_research("Best casino bonuses. SaaS casino tools."),
+    )
+    exclusion = _factor(
+        evaluate(company, _criteria(excluded_keywords=["casino"])), "exclusion_check"
+    )
+    assert exclusion.signals_found == ["casino"]
+    (evidence,) = exclusion.evidence
+    assert evidence.source == "research.extracted_text"
+
+
+def test_every_target_lands_in_exactly_one_list_in_criteria_order() -> None:
+    company = _company(
+        name="Top Software Vendors",
+        domain="acme.de",
+        website=_research("Acme is a B2B SaaS company in Munich."),
+    )
+    criteria = _criteria(
+        target_keywords=["b2b", "platform", "saas", "software"],
+        target_locations=["berlin", "munich"],
+        target_tlds=["de", "io"],
+    )
+    evaluation = evaluate(company, criteria)
+    industry = _factor(evaluation, "industry_fit")
+    location = _factor(evaluation, "location_fit")
+    assert industry.signals_found == ["b2b", "saas"]
+    assert industry.signals_unconfirmed == ["software"]
+    assert industry.signals_not_found == ["platform"]
+    assert location.signals_found == ["munich", ".de"]
+    assert location.signals_not_found == ["berlin", ".io"]
+    for factor in (industry, location):
+        signals = _signal_lists(factor)
+        assert len(signals) == len(set(signals))
+
+
+def test_non_canonical_criteria_cannot_duplicate_signals() -> None:
+    # Bypasses validation on purpose: evaluate() must still report each term once.
+    criteria = QualificationCriteria.model_construct(
+        profile="raw",
+        target_keywords=["saas", "saas", "b2b", "b2b"],
+        target_locations=["berlin", "berlin"],
+        target_tlds=["de", "de"],
+        excluded_keywords=["casino", "casino"],
+        threshold=60,
+        min_evidence_coverage=0.5,
+    )
+    company = _company(domain="acme.de", website=_research("B2B SaaS in Berlin."))
+    evaluation = evaluate(company, criteria)
+    for factor in evaluation.factors:
+        signals = _signal_lists(factor)
+        assert len(signals) == len(set(signals)), factor.key
+        assert len({e.signal for e in factor.evidence}) == len(factor.evidence)
+    assert _factor(evaluation, "industry_fit").signals_found == ["saas", "b2b"]
+    assert _factor(evaluation, "location_fit").signals_found == ["berlin", ".de"]
+
+
+def test_deduplication_is_deterministic() -> None:
+    company = _company(
+        name="SaaS SaaS", description="SaaS", website=_research("SaaS", title="SaaS")
+    )
+    first = evaluate(company, DEFAULTS)
+    second = evaluate(company, DEFAULTS)
+    assert first.factors == second.factors
+    assert first.rationale == second.rationale

@@ -205,6 +205,7 @@ async def test_qualify_with_defaults_and_response_shape(
         "threshold",
         "evidence_coverage",
         "matched_signals",
+        "unconfirmed_signals",
         "missing_signals",
         "disqualifying_signals",
         "factors",
@@ -241,7 +242,7 @@ async def test_insufficient_evidence_is_reported_distinctly(
         response = await http.post(f"/companies/{candidate_id}/qualify", json=SAAS)
     body = response.json()
     assert body["status"] == "insufficient_evidence"
-    assert body["evidence_coverage"] == 0.0
+    assert body["evidence_coverage"] == pytest.approx(0.0)
     assert body["factors"][0]["result"] == "unknown"
 
 
@@ -280,6 +281,37 @@ async def test_history_for_unqualified_candidate_is_empty(
         "latest": None,
         "history": [],
     }
+
+
+async def test_history_contract_reports_total_and_effective_limit(
+    client: Any, make_candidate: Any
+) -> None:
+    candidate_id = make_candidate()
+    async with client as http:
+        runs = [
+            (await http.post(f"/companies/{candidate_id}/qualify", json=SAAS)).json()["id"]
+            for _ in range(3)
+        ]
+        default = await http.get(f"/companies/{candidate_id}/qualifications")
+        paged = await http.get(f"/companies/{candidate_id}/qualifications", params={"limit": 2})
+        maximum = await http.get(
+            f"/companies/{candidate_id}/qualifications", params={"limit": 100}
+        )
+
+    for response in (default, paged, maximum):
+        assert response.status_code == 200
+        assert set(response.json()) == {"candidate_id", "total", "limit", "latest", "history"}
+
+    assert default.json()["limit"] == 20
+    assert default.json()["total"] == 3
+    assert [r["id"] for r in default.json()["history"]] == list(reversed(runs))
+
+    body = paged.json()
+    assert (body["total"], body["limit"], len(body["history"])) == (3, 2, 2)
+    assert [r["id"] for r in body["history"]] == [runs[2], runs[1]]
+    assert body["latest"] == body["history"][0]
+    assert maximum.json()["limit"] == 100
+    assert len(maximum.json()["history"]) == 3
 
 
 @pytest.mark.parametrize(

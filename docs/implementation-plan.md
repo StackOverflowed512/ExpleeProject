@@ -300,10 +300,10 @@ model and API; search/filtering of saved prospects; deduplication rules.
       `alembic upgrade head` (`0001 -> 0004`) followed by `alembic check`
       on a freshly reset `explee_test` reported "No new upgrade operations
       detected" (2026-10-24).
-- [x] Full suite after the review fixes (2026-10-24, Python 3.14.8,
-      PostgreSQL 17, `TEST_DATABASE_URL` → `explee_test`): 597 passed,
-      with the existing Starlette/httpx deprecation warning. Without a
-      test database: 462 passed, 135 skipped.
+- [x] Full suite after the second review round (2026-10-24, Python
+      3.14.8, PostgreSQL 17, `TEST_DATABASE_URL` → `explee_test`): 612
+      passed, with the existing Starlette/httpx deprecation warning.
+      Without a test database: 474 passed, 138 skipped.
 - [x] Phase 0–2 regression tests pass. Fixture updates only: truncate and
       drop the new tables, and the head revision is now `0004`.
 - [x] No Mistral, outreach, UI, authentication, Docker, or background
@@ -317,10 +317,17 @@ model and API; search/filtering of saved prospects; deduplication rules.
 - True simultaneous saves from two processes were not exercised; the race
   is simulated in one process, and the database constraint is tested
   directly.
-- Migration `0004` was not applied to the configured `explee`
-  development database (still at `0003`). Run `alembic upgrade head`
-  there before using the API, otherwise inserting a `preliminary` run
-  violates the old status constraint.
+- Migrations were verified only on the disposable `explee_test`
+  database. The configured `explee` development database reports
+  `0004_qualification_preliminary` (it was upgraded outside these
+  sessions) and holds no candidate or research rows, so real-data
+  preservation rests on the automated migration tests.
+- SonarCloud: the PR's quality gate failed on "Reliability Rating on New
+  Code" for both pushed commits. The project is private and the findings
+  could not be read without a SonarCloud sign-in. Exact float equality
+  in tests (rule `python:S1244`, a reliability rule) was fixed with
+  `pytest.approx`; whether that clears the gate is unverified until the
+  branch is pushed and re-analysed.
 
 **Review follow-ups (PR #8, 2026-10-24)**
 
@@ -340,6 +347,14 @@ model and API; search/filtering of saved prospects; deduplication rules.
 - Stored criteria are returned through a lenient `StoredCriteria`
   schema, so tightened input validation (such as the new overlap rule)
   can never make older runs unreadable.
+- Second round: the history contract (`candidate_id`, `total`, `limit`,
+  `latest`, `history`) is pinned by API, validation, and OpenAPI tests
+  and documented with an example. Signal lists are de-duplicated inside
+  each factor (one evidence item and one list per term, even for
+  non-canonical criteria) and across factors. The new response-level
+  `unconfirmed_signals` aggregate reports each term once, in the
+  strongest applicable list. Rule semantics are unchanged for valid
+  criteria, so the version stays `qualification-rules/v2`.
 
 ## P4 — Outreach: campaigns and drafts
 

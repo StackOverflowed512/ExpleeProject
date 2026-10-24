@@ -309,8 +309,8 @@ snippet is preliminary and cannot be saved. Describe your target market in
 $criteria = @{ criteria = @{ profile = "berlin-saas"; target_keywords = @("saas", "b2b"); target_locations = @("berlin", "germany"); target_tlds = @("de"); excluded_keywords = @("recruitment agency"); threshold = 60 } } | ConvertTo-Json -Depth 5
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/companies/1/qualify -ContentType "application/json" -Body $criteria | ConvertTo-Json -Depth 8
 
-# Qualification history (newest first)
-Invoke-RestMethod http://127.0.0.1:8000/companies/1/qualifications | ConvertTo-Json -Depth 8
+# Qualification history (newest first; limit 1-100, default 20)
+Invoke-RestMethod "http://127.0.0.1:8000/companies/1/qualifications?limit=5" | ConvertTo-Json -Depth 8
 
 # Save (uses the latest qualification; 409 unless it is "qualified", e.g. "preliminary")
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/companies/1/save -ContentType "application/json" -Body '{}' | ConvertTo-Json -Depth 5
@@ -347,7 +347,27 @@ configure is `not_applicable`.
   - otherwise → `qualified`.
 
 Each run stores its criteria, factors, evidence excerpts with source URLs,
-and a plain-text rationale. Runs are never overwritten.
+and a plain-text rationale. Runs are never overwritten. A qualification
+record also lists `matched_signals`, `unconfirmed_signals` (found only in
+search-result data and refuted by the complete website page),
+`missing_signals`, and `disqualifying_signals`. Each term appears once, in
+the first list that applies.
+
+The history endpoint returns:
+
+```json
+{
+  "candidate_id": 1,
+  "total": 3,
+  "limit": 5,
+  "latest": { "id": 3, "status": "qualified", "...": "..." },
+  "history": [ { "id": 3 }, { "id": 2 }, { "id": 1 } ]
+}
+```
+
+`total` counts every stored run; `limit` is the effective page size;
+`history` holds at most `limit` runs, newest first; `latest` is
+`history[0]` (or `null`).
 
 **Saving.** Only a persisted `qualified` run from the current rules
 (`qualification-rules/v2`) can justify a save; the backend enforces this.

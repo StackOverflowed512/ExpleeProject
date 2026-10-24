@@ -145,17 +145,24 @@ def _unique(values: list[str]) -> list[str]:
 def to_qualification_record(row: CompanyQualification) -> QualificationRecord:
     factors = [FactorOutcome.model_validate(item) for item in row.factors]
     matched: list[str] = []
+    unconfirmed: list[str] = []
     missing: list[str] = []
     disqualifying: list[str] = []
     for factor in factors:
         if factor.key in _POSITIVE_FACTORS:
             matched.extend(factor.signals_found)
+            unconfirmed.extend(factor.signals_unconfirmed)
             missing.extend(factor.signals_not_found)
         elif factor.disqualifying:
             disqualifying.extend(factor.signals_found)
+    # Each term is reported once, in factor-then-criteria order, in the
+    # strongest list that applies: matched, then unconfirmed, then missing.
     matched = _unique(matched)
-    # A term found by one factor is not "missing" overall.
-    missing = [term for term in _unique(missing) if term not in matched]
+    unconfirmed = [term for term in _unique(unconfirmed) if term not in matched]
+    missing = [
+        term for term in _unique(missing) if term not in matched and term not in unconfirmed
+    ]
+    disqualifying = _unique(disqualifying)
     return QualificationRecord(
         id=row.id,
         candidate_id=row.candidate_id,
@@ -169,6 +176,7 @@ def to_qualification_record(row: CompanyQualification) -> QualificationRecord:
         threshold=row.threshold,
         evidence_coverage=row.evidence_coverage,
         matched_signals=matched,
+        unconfirmed_signals=unconfirmed,
         missing_signals=missing,
         disqualifying_signals=disqualifying,
         factors=factors,

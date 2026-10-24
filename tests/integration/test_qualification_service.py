@@ -121,7 +121,7 @@ def test_qualification_run_is_persisted_with_audit_fields(db_session: Session) -
     assert stored.status == "qualified"
     assert stored.score == 100
     assert stored.threshold == 70
-    assert stored.evidence_coverage == 1.0
+    assert stored.evidence_coverage == pytest.approx(1.0)
     assert [f["key"] for f in stored.factors] == ["industry_fit", "location_fit", "exclusion_check"]
     assert stored.rationale.startswith("Qualified: score 100 meets the threshold 70.")
     assert stored.qualified_at == T0
@@ -588,7 +588,38 @@ def test_signal_lists_are_deduplicated(db_session: Session) -> None:
     )
     record = to_qualification_record(run_qualification(db_session, candidate.id, criteria))
     assert record.matched_signals == ["berlin", "saas"]
+    assert record.unconfirmed_signals == []
     assert record.missing_signals == ["munich"]
+
+
+def test_unconfirmed_signals_are_aggregated_once(db_session: Session) -> None:
+    # "berlin" is both a keyword and a location; both factors see it only in
+    # the listicle title, and the complete website page refutes it.
+    candidate = _candidate(
+        db_session, name="Best Berlin SaaS Companies", description="Berlin SaaS list."
+    )
+    _research(db_session, candidate, "Handmade ceramics from Porto.")
+    criteria = QualificationCriteria(
+        target_keywords=["berlin", "saas"], target_locations=["berlin", "munich"]
+    )
+    record = to_qualification_record(run_qualification(db_session, candidate.id, criteria))
+
+    assert record.status == "unqualified"
+    assert record.matched_signals == []
+    assert record.unconfirmed_signals == ["berlin", "saas"]
+    assert record.missing_signals == ["munich"]
+    every = record.matched_signals + record.unconfirmed_signals + record.missing_signals
+    assert len(every) == len(set(every))
+
+
+def test_disqualifying_signals_are_aggregated_once(db_session: Session) -> None:
+    candidate = _candidate(db_session, name="Casino Casino", description="casino")
+    _research(db_session, candidate, "SaaS for the casino industry. Casino casino.")
+    criteria = QualificationCriteria(target_keywords=["saas"], excluded_keywords=["casino"])
+    record = to_qualification_record(run_qualification(db_session, candidate.id, criteria))
+    assert record.status == "unqualified"
+    assert record.disqualifying_signals == ["casino"]
+    assert record.matched_signals == ["saas"]
 
 
 def test_persisted_v2_factors_include_evidence_levels(db_session: Session) -> None:

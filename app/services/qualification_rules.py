@@ -225,7 +225,16 @@ def _positive_factor(
     tlds: list[str],
     ctx: _Context,
 ) -> FactorOutcome:
-    """Evaluate a factor that rewards finding target terms (website first)."""
+    """Evaluate a factor that rewards finding target terms (website first).
+
+    Each distinct term yields at most one evidence item and appears in
+    exactly one of ``signals_found``, ``signals_unconfirmed``, or
+    ``signals_not_found``, in criteria order, however many sources contain
+    it. Validated criteria are already unique; de-duplicating here keeps the
+    guarantee for any caller.
+    """
+    terms = list(dict.fromkeys(terms))
+    tlds = list(dict.fromkeys(tlds))
     evidence: list[Evidence] = []
     unconfirmed: list[str] = []
     for term in terms:
@@ -348,13 +357,12 @@ def _exclusion(criteria: QualificationCriteria, ctx: _Context) -> FactorOutcome:
         return _not_applicable(
             "exclusion_check", label, EXCLUSION_WEIGHT, "No excluded keywords are configured."
         )
+    excluded = list(dict.fromkeys(criteria.excluded_keywords))
     evidence = [
-        e
-        for e in (_find(t, ctx.website + ctx.discovery) for t in criteria.excluded_keywords)
-        if e is not None
+        e for e in (_find(t, ctx.website + ctx.discovery) for t in excluded) if e is not None
     ]
     found = [item.signal for item in evidence]
-    not_found = [term for term in criteria.excluded_keywords if term not in found]
+    not_found = [term for term in excluded if term not in found]
     if found:
         return FactorOutcome(
             key="exclusion_check",

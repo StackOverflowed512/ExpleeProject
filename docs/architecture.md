@@ -298,8 +298,9 @@ only for tests and offline runs.
 fields plus latest usable research, via `get_enrichment`), applies the
 rules, and appends a run. It makes no network requests; research the
 website first for stronger evidence. `GET /companies/{id}/qualifications`
-returns `total`, the effective `limit` (1–100, default 20), `latest`, and
-`history` (newest first). `POST /companies/{id}/save` saves a qualified
+returns exactly `candidate_id`, `total` (all stored runs), `limit` (the
+effective page size, 1–100, default 20), `latest` (`history[0]` or
+`null`), and `history` (at most `limit` runs, newest first). `POST /companies/{id}/save` saves a qualified
 candidate. `GET /prospects` searches saved prospects.
 
 **Modules.**
@@ -389,10 +390,15 @@ explanation, and evidence items. Each evidence item has the signal, source
 field, `level`, `counted`, source URL, research ID, and an excerpt of at
 most ~160 characters. The `rationale` is a deterministic text summary: one
 line for the decision, one per factor including its evidence level.
-Response-level `matched_signals`, `missing_signals`, and
-`disqualifying_signals` are de-duplicated (first-seen order), and a term
-matched by any factor is not listed as missing. Identical inputs and
-criteria always give identical results.
+Within a factor, each distinct term yields at most one evidence item (the
+first source in the fixed order) and appears in exactly one of
+`signals_found`, `signals_unconfirmed`, or `signals_not_found`, in
+criteria order, however many sources contain it. Response-level
+`matched_signals`, `unconfirmed_signals`, `missing_signals`, and
+`disqualifying_signals` aggregate the factors in factor-then-criteria
+order. Each term is reported once, in the strongest list that applies
+(matched, then unconfirmed, then missing). Identical inputs and criteria
+always give identical results.
 
 *Changes from `qualification-rules/v1`:* v1 read sources in the order name
 → snippet → website, counted a search-title match as full evidence, and
