@@ -171,10 +171,22 @@ background queue.
 their discovery values. Research provenance is `requested_url`,
 `final_url`, `fetched_at`, and `fetcher` on each row.
 
-**Transactions.** The read transaction is ended before the network fetch so
-no pooled connection is held during it. The insert and pruning then run in
-one transaction; any `SQLAlchemyError` rolls back and surfaces as
-`research_persistence_failed` (500), leaving earlier rows intact.
+**Session lifecycle and transactions.** `run_research` receives the session
+factory (via the `get_session_factory` dependency), not a request-scoped
+session, and runs three isolated steps:
+
+1. A short read-only session loads the candidate and checks freshness, then
+   closes.
+2. The network fetch runs with **no** session, transaction, or pooled
+   connection held.
+3. A new session opens one narrow `session.begin()` transaction for the
+   insert and pruning.
+
+The service therefore never commits or rolls back a caller's work. Any
+`SQLAlchemyError` in step 3 rolls back that transaction only and surfaces as
+`research_persistence_failed` (500), leaving earlier rows intact. The read
+endpoints (`GET .../research`, `GET .../enrichment`) use the usual
+request-scoped session because they never perform network I/O.
 
 **Enrichment.** `GET /companies/{id}/enrichment` returns the candidate's
 discovery fields, a `discovery` provenance block, `research_status`,
@@ -234,8 +246,10 @@ treated as untrusted. For the initial URL and every redirect target:
    TLS connection is never reused for another hostname that shares an IP.
    The request is GET-only with `Accept-Encoding: identity`.
 7. **Bounds**: connect, read, write, and pool timeouts;
-   `RESEARCH_MAX_FETCH_SECONDS` total deadline checked before each hop,
-   each address, and each body chunk; the streamed body stops at
+   DNS resolution runs on a small worker pool (8 per fetcher) and is
+   abandoned after `min(RESEARCH_CONNECT_TIMEOUT_SECONDS, remaining
+   budget)`, failing as `timeout`; the `RESEARCH_MAX_FETCH_SECONDS` total
+   deadline is checked before each hop, each address, and each body chunk; the streamed body stops at
    `RESEARCH_MAX_RESPONSE_BYTES`; only `text/html` and
    `application/xhtml+xml` are parsed; text is capped at
    `RESEARCH_MAX_TEXT_CHARS`.
@@ -251,9 +265,11 @@ only for tests and offline runs.
 
 **Residual limitations (not guaranteed).**
 
-- DNS resolution uses the OS resolver (`socket.getaddrinfo`), which has no
-  timeout of its own. A slow resolver can exceed
-  `RESEARCH_MAX_FETCH_SECONDS` for that step.
+- DNS resolution uses the OS resolver (`socket.getaddrinfo`), which cannot
+  be cancelled. The fetch stops waiting at the DNS timeout, but the worker
+  thread stays busy until the OS resolver returns. At most 8 such lookups
+  run per fetcher; once all workers are stuck, new lookups queue and time
+  out (fail closed) instead of spawning more threads.
 - Pinning depends on httpcore honouring the `sni_hostname` request
   extension (verified for httpcore 1.0.x). An HTTP client upgrade must keep
   that behaviour. A manual check confirmed that wrong-host, self-signed,

@@ -17,7 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.database import get_session
+from app.database import get_session, get_session_factory
 from app.models.company_candidate import CompanyCandidate
 from app.services import research as research_service
 from app.services.providers.website import FetchFailure, FetchOutcome, FetchResult
@@ -116,6 +116,7 @@ def client(
             session.close()
 
     application.dependency_overrides[get_session] = _session_override
+    application.dependency_overrides[get_session_factory] = lambda: db_session_factory
 
     class _Ctx:
         async def __aenter__(self) -> AsyncClient:

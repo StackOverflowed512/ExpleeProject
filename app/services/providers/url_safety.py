@@ -245,7 +245,11 @@ def resolve_public_addresses(
         raise UnsafeUrlError(
             FetchFailure.DNS_RESOLUTION_FAILED, "The website host could not be resolved."
         ) from None
+    return validate_resolved_addresses(raw_addresses)
 
+
+def validate_resolved_addresses(raw_addresses: list[str]) -> list[IPAddress]:
+    """Parse resolver output and require every address to be public."""
     addresses: list[IPAddress] = []
     for raw in raw_addresses:
         # Strip an IPv6 zone index (``fe80::1%eth0``); zoned addresses are

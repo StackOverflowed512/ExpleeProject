@@ -6,6 +6,8 @@ resolver; no live website or DNS server is contacted.
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -543,6 +545,87 @@ def test_hostnames_resolving_to_non_public_addresses_are_blocked(address: str) -
     result = _fetcher(_never_called, resolver=resolver).fetch("https://evil.example.com/")
     assert result.failure is FetchFailure.BLOCKED_DESTINATION
     assert result.final_url is None
+
+
+def test_stalled_resolver_is_bounded_by_dns_timeout() -> None:
+    release = threading.Event()
+
+    def stalled(host: str, port: int) -> list[str]:
+        release.wait(timeout=5)
+        return [PUBLIC_V4]
+
+    fetcher = _fetcher(
+        _never_called,
+        resolver=stalled,
+        connect_timeout_seconds=0.05,
+        max_fetch_seconds=20.0,
+    )
+    started = time.monotonic()
+    try:
+        result = fetcher.fetch("https://slow-dns.example.com/")
+    finally:
+        release.set()
+        fetcher.close()
+
+    assert result.failure is FetchFailure.TIMEOUT
+    assert result.final_url is None
+    assert time.monotonic() - started < 2.0
+
+
+def test_resolver_wait_is_capped_by_remaining_budget() -> None:
+    release = threading.Event()
+    waits: list[float | None] = []
+
+    def stalled(host: str, port: int) -> list[str]:
+        release.wait(timeout=5)
+        return [PUBLIC_V4]
+
+    # Fake clock: the total budget is almost spent when resolution starts.
+    ticks = iter([0.0, 0.0, 9.95])
+    fetcher = _fetcher(
+        _never_called,
+        resolver=stalled,
+        connect_timeout_seconds=5.0,
+        max_fetch_seconds=10.0,
+        monotonic=lambda: next(ticks),
+    )
+    original_submit = fetcher._dns_pool.submit
+
+    def recording_submit(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        future = original_submit(*args, **kwargs)  # type: ignore[arg-type]
+        original_result = future.result
+
+        def result(timeout: float | None = None) -> object:
+            waits.append(timeout)
+            return original_result(timeout=timeout)
+
+        future.result = result  # type: ignore[method-assign]
+        return future
+
+    fetcher._dns_pool.submit = recording_submit  # type: ignore[method-assign]
+    try:
+        result = fetcher.fetch("https://slow-dns.example.com/")
+    finally:
+        release.set()
+        fetcher.close()
+
+    assert result.failure is FetchFailure.TIMEOUT
+    assert waits and waits[0] is not None and waits[0] == pytest.approx(0.05)
+
+
+def test_close_does_not_wait_for_stalled_lookups() -> None:
+    release = threading.Event()
+
+    def stalled(host: str, port: int) -> list[str]:
+        release.wait(timeout=5)
+        return [PUBLIC_V4]
+
+    fetcher = _fetcher(_never_called, resolver=stalled, connect_timeout_seconds=0.05)
+    fetcher.fetch("https://slow-dns.example.com/")
+    started = time.monotonic()
+    fetcher.close()
+    release.set()
+    assert time.monotonic() - started < 1.0
 
 
 def test_dns_failure_is_categorized_without_request() -> None:

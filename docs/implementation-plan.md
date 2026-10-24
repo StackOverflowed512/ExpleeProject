@@ -156,6 +156,8 @@ partial-data handling.
   row per attempt. History is pruned to the 5 most recent attempts plus the
   latest usable record per candidate. Discovery provenance is never
   modified.
+- Session lifecycle: research opens its own short sessions from the
+  session factory, and no session is held across the outbound fetch.
 - Freshness: usable research younger than `RESEARCH_FRESHNESS_HOURS`
   (default 24) is reused unless `{"refresh": true}` is sent.
 - API: `POST /companies/{id}/research`, `GET /companies/{id}/research`,
@@ -186,8 +188,8 @@ partial-data handling.
       `0001 -> 0002` to the configured `explee` database, and
       `alembic check` reported "No new upgrade operations detected."
 - [x] Full suite on 2026-10-24 (Python 3.14.8, PostgreSQL 17,
-      `TEST_DATABASE_URL` → `explee_test`): 406 passed. Without a test
-      database: 333 passed, 73 skipped. The only warning is the existing
+      `TEST_DATABASE_URL` → `explee_test`): 411 passed (after review
+      follow-ups). Without a test database: 336 passed, 75 skipped. The only warning is the existing
       third-party Starlette/httpx deprecation from FastAPI's
       `testclient.py`.
 - [x] Phase 0, Phase 1, and Phase 1.1 regression tests pass unchanged,
@@ -213,8 +215,20 @@ partial-data handling.
 - Behaviour against a real DNS-rebinding server was not exercised. The
   mitigation is covered by unit tests with a rebinding resolver stub and by
   the design (single resolution per hop, connect to the validated IP).
-- Resolver timeouts: `getaddrinfo` has no timeout and is not bounded by
-  `RESEARCH_MAX_FETCH_SECONDS`.
+- DNS timeout behaviour is covered by unit tests with a stalled resolver
+  stub, not against a real slow DNS server.
+
+**Review follow-ups (2026-10-24, PR review)**
+
+- Session lifecycle: `run_research` now takes a session factory and uses a
+  read-only session, a fetch with no session open, and one narrow write
+  transaction. It no longer commits a caller's session. Tests assert that no
+  pooled connection is checked out during the fetch and that a caller's
+  pending changes are never committed.
+- DNS bound: resolution is limited to `min(connect timeout, remaining
+  budget)` on a bounded worker pool, so the total fetch budget now covers
+  name resolution. A stuck OS lookup still occupies its worker until it
+  returns (see `docs/architecture.md`).
 
 ## P3 — Explorer: qualification and saved prospects
 

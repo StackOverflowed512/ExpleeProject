@@ -15,8 +15,13 @@ Policies
   the latest usable record, which bounds growth.
 * **Provenance.** Discovery fields on the candidate (``source_url``,
   ``provider``, ``discovered_at``) are never modified by research.
-* **Transactions.** One attempt is persisted (and history pruned) in a
-  single transaction; any database failure rolls it back and raises
+* **Session lifecycle.** :func:`run_research` takes a session factory, not
+  a caller's session, and runs three isolated steps: a short read-only
+  session (candidate and freshness check), the network fetch with **no**
+  session or transaction open, and one narrow write transaction (insert
+  plus pruning). It never commits or rolls back anyone else's work.
+* **Transactions.** The write transaction either persists the attempt and
+  the pruning together or rolls both back and raises
   :class:`ResearchPersistenceError`, leaving prior research intact.
 """
 
@@ -29,7 +34,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import Select, delete, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.company_candidate import CompanyCandidate
 from app.models.company_research import CompanyResearch
@@ -194,7 +199,7 @@ def _prune_history(session: Session, candidate_id: int) -> None:
 
 
 def run_research(
-    session: Session,
+    session_factory: sessionmaker[Session],
     fetcher: WebsiteFetcher,
     candidate_id: int,
     *,
@@ -208,31 +213,32 @@ def run_research(
     :class:`CandidateWebsiteMissingError` when the candidate has no website;
     neither makes a network request. A stored URL that fails validation is
     recorded as a failed attempt without contacting the network. Fetch
-    failures are recorded, never raised.
+    failures are recorded, never raised. The returned ORM rows are detached
+    with their attributes loaded.
     """
     current_time = now or datetime.now(UTC)
-    candidate = get_candidate(session, candidate_id)
-    website_url = candidate.website_url
-    if website_url is None or not website_url.strip():
-        raise CandidateWebsiteMissingError(
-            f"Company candidate {candidate_id} has no website URL to research."
-        )
 
-    if not refresh and freshness > timedelta(0):
-        usable = latest_usable_research(session, candidate_id)
-        if usable is not None and usable.fetched_at >= current_time - freshness:
-            return ResearchRun(
-                candidate_id=candidate_id,
-                attempt=usable,
-                reused=True,
-                latest_usable=usable,
-                status=research_status(usable, usable),
+    # 1. Read-only session; closed (and its transaction ended) before any
+    #    network I/O.
+    with session_factory() as session:
+        candidate = get_candidate(session, candidate_id)
+        website_url = candidate.website_url
+        if website_url is None or not website_url.strip():
+            raise CandidateWebsiteMissingError(
+                f"Company candidate {candidate_id} has no website URL to research."
             )
+        if not refresh and freshness > timedelta(0):
+            usable = latest_usable_research(session, candidate_id)
+            if usable is not None and usable.fetched_at >= current_time - freshness:
+                return ResearchRun(
+                    candidate_id=candidate_id,
+                    attempt=usable,
+                    reused=True,
+                    latest_usable=usable,
+                    status=research_status(usable, usable),
+                )
 
-    # End the read transaction so no pooled connection is held while the
-    # network fetch runs.
-    session.commit()
-
+    # 2. Network fetch with no database session or transaction open.
     try:
         check_url(website_url)
     except UnsafeUrlError as exc:
@@ -256,19 +262,26 @@ def run_research(
             FetchOutcome(result.outcome).value,
         )
 
+    # 3. One narrow write transaction: insert the attempt and prune history.
+    #    ``session.begin()`` commits on success and rolls back on any error.
     row = _to_row(candidate_id, result)
-    try:
-        session.add(row)
-        session.flush()
-        _prune_history(session, candidate_id)
-        session.commit()
-        session.refresh(row)
-    except SQLAlchemyError as exc:
-        session.rollback()
-        logger.exception("Research persistence failed for candidate %s", candidate_id)
-        raise ResearchPersistenceError("Research results could not be saved.") from exc
+    with session_factory() as session:
+        try:
+            with session.begin():
+                session.add(row)
+                session.flush()
+                _prune_history(session, candidate_id)
+        except SQLAlchemyError as exc:
+            logger.exception(
+                "Research persistence failed for candidate %s", candidate_id
+            )
+            raise ResearchPersistenceError(
+                "Research results could not be saved."
+            ) from exc
 
-    latest_usable = latest_usable_research(session, candidate_id)
+        session.refresh(row)
+        latest_usable = latest_usable_research(session, candidate_id)
+
     return ResearchRun(
         candidate_id=candidate_id,
         attempt=row,

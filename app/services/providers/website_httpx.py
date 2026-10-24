@@ -5,6 +5,9 @@ sequence:
 
 1. :func:`check_url` validates the URL syntax, scheme, port, and host form.
 2. The host is resolved once and every resolved address must be public.
+   Resolution runs on a small worker pool and is abandoned after
+   ``connect_timeout_seconds`` or the remaining total budget, whichever is
+   shorter, so a stalled resolver cannot exceed the fetch deadline.
 3. The request is sent to a validated IP address itself (DNS pinning),
    IPv4 addresses first; only a connect failure moves to the next one.
    The original hostname is kept in the ``Host`` header and as the TLS
@@ -29,6 +32,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urljoin
@@ -45,6 +50,7 @@ from app.services.providers.url_safety import (
     check_url,
     resolve_public_addresses,
     system_resolver,
+    validate_resolved_addresses,
 )
 from app.services.providers.website import FetchFailure, FetchOutcome, FetchResult
 
@@ -56,6 +62,10 @@ HTML_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 MAX_CONTENT_TYPE_LENGTH = 255
 MAX_ADDRESSES_PER_HOP = 4
+# Concurrent DNS lookups per fetcher. A lookup that outlives its timeout
+# keeps its worker until the OS resolver returns; when every worker is
+# stuck, new lookups queue and time out, so the fetcher fails closed.
+DNS_WORKERS = 8
 
 
 @dataclass
@@ -113,6 +123,10 @@ class HttpxWebsiteFetcher:
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._max_fetch_seconds = max_fetch_seconds
+        self._dns_timeout = connect_timeout_seconds
+        self._dns_pool = ThreadPoolExecutor(
+            max_workers=DNS_WORKERS, thread_name_prefix="explee-dns"
+        )
         self._max_response_bytes = max_response_bytes
         self._max_redirects = max(0, max_redirects)
         self._max_text_chars = max_text_chars
@@ -133,6 +147,8 @@ class HttpxWebsiteFetcher:
         self._owns_client = client is None
 
     def close(self) -> None:
+        # Do not wait for lookups stuck in the OS resolver.
+        self._dns_pool.shutdown(wait=False, cancel_futures=True)
         if self._owns_client:
             self._client.close()
 
@@ -181,6 +197,27 @@ class HttpxWebsiteFetcher:
     def _check_deadline(self, deadline: float) -> None:
         if self._monotonic() > deadline:
             raise _FetchFailed(FetchFailure.TIMEOUT)
+
+    def _resolve(self, target: ValidatedUrl, deadline: float) -> list[IPAddress]:
+        """Resolve ``target`` within the DNS timeout and remaining budget."""
+        if target.is_ip_literal:
+            return resolve_public_addresses(target, self._resolver)
+
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            raise _FetchFailed(FetchFailure.TIMEOUT)
+        future = self._dns_pool.submit(self._resolver, target.host, target.port)
+        try:
+            raw_addresses = future.result(timeout=min(remaining, self._dns_timeout))
+        except FutureTimeoutError:
+            future.cancel()
+            raise _FetchFailed(FetchFailure.TIMEOUT) from None
+        except (OSError, UnicodeError):
+            raise UnsafeUrlError(
+                FetchFailure.DNS_RESOLUTION_FAILED,
+                "The website host could not be resolved.",
+            ) from None
+        return validate_resolved_addresses(raw_addresses)
 
     def _send_pinned(
         self,
@@ -231,7 +268,7 @@ class HttpxWebsiteFetcher:
 
         for hop in range(self._max_redirects + 1):
             self._check_deadline(deadline)
-            addresses = resolve_public_addresses(target, self._resolver)
+            addresses = self._resolve(target, deadline)
             state.final_url = target.url
             state.http_status = None
             state.content_type = None

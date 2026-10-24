@@ -10,10 +10,10 @@ from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Path, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
-from app.database import get_session
+from app.database import get_session, get_session_factory
 from app.errors import AppError
 from app.schemas.research import (
     EnrichedCompany,
@@ -74,14 +74,16 @@ def request_research(
     candidate_id: CandidateId,
     request: Request,
     payload: Annotated[ResearchRequest | None, Body()] = None,
-    session: Session = Depends(get_session),
+    session_factory: sessionmaker[Session] = Depends(get_session_factory),
 ) -> ResearchRunResponse:
     fetcher: WebsiteFetcher = request.app.state.website_fetcher
     settings: Settings = request.app.state.settings
     options = payload or ResearchRequest()
     try:
+        # The service opens its own short sessions so no session is held
+        # across the outbound fetch.
         run = run_research(
-            session,
+            session_factory,
             fetcher,
             candidate_id,
             refresh=options.refresh,
