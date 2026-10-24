@@ -21,7 +21,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.config import PROJECT_ROOT
 from app.models import Base
 
-HEAD_REVISION = "0003_qualification_prospects"
+HEAD_REVISION = "0004_qualification_preliminary"
+PHASE3_REVISION = "0003_qualification_prospects"
 PHASE2_REVISION = "0002_company_research"
 PHASE1_REVISION = "0001_company_candidates"
 
@@ -458,6 +459,102 @@ def test_upgrade_from_phase2_schema_preserves_candidates_and_research(
         assert "company_qualifications" not in tables
         assert "saved_prospects" not in tables
         assert research_rows == 2
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+
+# -- 0004: preliminary qualification status --------------------------------------
+def test_preliminary_status_is_accepted_at_head(inspector: Engine) -> None:
+    with inspector.begin() as connection:
+        candidate_id = _insert_candidate(connection, "preliminary.example")
+        qualification_id = connection.execute(
+            _INSERT_QUALIFICATION, {"cid": candidate_id, "status": "preliminary", "score": 100}
+        ).scalar_one()
+        connection.execute(
+            text("DELETE FROM company_qualifications WHERE id = :q"), {"q": qualification_id}
+        )
+
+
+def test_upgrade_from_phase3_schema_preserves_all_rows(migration_database: str) -> None:
+    """A database at 0003 with candidates, research, runs, and a prospect upgrades intact."""
+    config = _alembic_config(migration_database)
+    engine = create_engine(migration_database)
+    count_all = text(
+        "SELECT (SELECT count(*) FROM company_candidates), "
+        "(SELECT count(*) FROM company_research), "
+        "(SELECT count(*) FROM company_qualifications), "
+        "(SELECT count(*) FROM saved_prospects)"
+    )
+    try:
+        with engine.begin() as connection:
+            connection.execute(_DROP_SCHEMA)
+        command.upgrade(config, PHASE3_REVISION)
+        with engine.begin() as connection:
+            candidate_id = _insert_candidate(connection, "phase3.example")
+            connection.execute(
+                _INSERT_RESEARCH, {"cid": candidate_id, "outcome": "success", "failure": None}
+            )
+            qualification_id = connection.execute(
+                _INSERT_QUALIFICATION, {"cid": candidate_id, "status": "qualified", "score": 90}
+            ).scalar_one()
+            connection.execute(
+                _INSERT_QUALIFICATION,
+                {"cid": candidate_id, "status": "insufficient_evidence", "score": 0},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO saved_prospects (candidate_id, qualification_id) "
+                    "VALUES (:c, :q)"
+                ),
+                {"c": candidate_id, "q": qualification_id},
+            )
+            before = tuple(connection.execute(count_all).one())
+            # 0003 rejects the new status.
+            with pytest.raises(IntegrityError):
+                with connection.begin_nested():
+                    connection.execute(
+                        _INSERT_QUALIFICATION,
+                        {"cid": candidate_id, "status": "preliminary", "score": 100},
+                    )
+
+        command.upgrade(config, "head")
+        with engine.begin() as connection:
+            after = tuple(connection.execute(count_all).one())
+            statuses = connection.execute(
+                text("SELECT status FROM company_qualifications ORDER BY id")
+            ).scalars().all()
+        assert before == after == (1, 1, 2, 1)
+        assert statuses == ["qualified", "insufficient_evidence"]
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+
+def test_downgrade_refuses_to_drop_preliminary_rows(migration_database: str) -> None:
+    config = _alembic_config(migration_database)
+    engine = create_engine(migration_database)
+    try:
+        command.upgrade(config, "head")
+        with engine.begin() as connection:
+            candidate_id = _insert_candidate(connection, "no-downgrade.example")
+            connection.execute(
+                _INSERT_QUALIFICATION, {"cid": candidate_id, "status": "preliminary", "score": 100}
+            )
+        with pytest.raises(IntegrityError):
+            command.downgrade(config, PHASE3_REVISION)
+        with engine.begin() as connection:
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            preliminary = connection.execute(
+                text("SELECT count(*) FROM company_qualifications WHERE status = 'preliminary'")
+            ).scalar_one()
+            connection.execute(
+                text("DELETE FROM company_candidates WHERE id = :cid"), {"cid": candidate_id}
+            )
+        assert revision == HEAD_REVISION
+        assert preliminary == 1
     finally:
         command.upgrade(config, "head")
         engine.dispose()

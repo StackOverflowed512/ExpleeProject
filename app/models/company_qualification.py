@@ -78,7 +78,7 @@ class CompanyQualification(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('qualified', 'unqualified', 'insufficient_evidence')",
+            "status IN ('qualified', 'preliminary', 'unqualified', 'insufficient_evidence')",
             name="status_valid",
         ),
         CheckConstraint("score BETWEEN 0 AND 100", name="score_range"),

@@ -189,12 +189,14 @@ Revisions:
 | `0001_company_candidates` | P1 | `company_candidates` and its partial unique indexes |
 | `0002_company_research` | P2 | `company_research` (FK to candidates, `ON DELETE CASCADE`) |
 | `0003_qualification_prospects` | P3 | `company_qualifications` (append-only runs) and `saved_prospects` (unique per candidate) |
+| `0004_qualification_preliminary` | P3 | widens the qualification status check to allow `preliminary` (no data changes) |
 
 Existing Phase 1 and Phase 2 databases upgrade in place with
 `alembic upgrade head`. Every revision is additive, so existing candidates
 and research are untouched. To roll back only Phase 3, run
 `alembic downgrade 0002_company_research`. That drops the qualification and
-prospect tables **and their data**. Verify the schema afterwards:
+prospect tables **and their data**. Downgrading `0004` alone is refused
+while `preliminary` runs exist. Verify the schema afterwards:
 
 ```powershell
 psql -U postgres -h localhost -d explee -c "\d company_candidates"
@@ -296,9 +298,10 @@ residual limitations are in `docs/architecture.md`.
 ## 5d. Qualify, save, and search prospects
 
 Qualification applies deterministic, versioned rules
-(`qualification-rules/v1`) to the candidate's **stored** discovery data and
-latest usable research. It makes no network or AI calls, so research the
-website first for stronger evidence. Describe your target market in
+(`qualification-rules/v2`) to the candidate's **stored** discovery data and
+latest usable research. It makes no network or AI calls. **Research the
+website first**: a match found only in the search result's title or
+snippet is preliminary and cannot be saved. Describe your target market in
 `criteria`, or omit it to use the defaults (`b2b`, `platform`, `saas`,
 `software`; threshold 60).
 
@@ -309,7 +312,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/companies/1/qualify -C
 # Qualification history (newest first)
 Invoke-RestMethod http://127.0.0.1:8000/companies/1/qualifications | ConvertTo-Json -Depth 8
 
-# Save (uses the latest qualification; 409 unless it is "qualified")
+# Save (uses the latest qualification; 409 unless it is "qualified", e.g. "preliminary")
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/companies/1/save -ContentType "application/json" -Body '{}' | ConvertTo-Json -Depth 5
 
 # Search saved prospects
@@ -321,22 +324,35 @@ Invoke-RestMethod http://127.0.0.1:8000/prospects/1 | ConvertTo-Json -Depth 8
 `location_fit` (30), and `exclusion_check` (20). A factor you don't
 configure is `not_applicable`.
 
+- Evidence has a level: `website` (the company's own pages), `domain`
+  (TLD), or `discovery` (the search result's title and snippet, which are
+  often listicles such as "Best Software Companies in Berlin"). Terms are
+  looked up on the website first.
+- A discovery-only match counts while research is missing or partial.
+  Once a complete page was read and it doesn't mention the term, the match
+  is listed under `signals_unconfirmed` and does not count.
 - A factor is **unknown** (rather than failed) when the evidence is
   missing: a term's absence only counts if a complete website page was
   read.
 - The score is points ÷ evaluated weight × 100, so missing data never
   lowers it.
 - Results:
-  - an excluded term found → `unqualified`;
+  - an excluded term found anywhere → `unqualified`;
   - fewer than `min_evidence_coverage` (default 50%) of the factor weight
     evaluable → `insufficient_evidence`;
-  - otherwise score ≥ threshold → `qualified`, else `unqualified`.
+  - score below threshold, or industry fit not met (it is required) →
+    `unqualified`;
+  - industry fit not evaluable → `insufficient_evidence`;
+  - industry fit supported only by search-result data → `preliminary`;
+  - otherwise → `qualified`.
 
 Each run stores its criteria, factors, evidence excerpts with source URLs,
 and a plain-text rationale. Runs are never overwritten.
 
-**Saving.** Only a persisted `qualified` run can justify a save; the
-backend enforces this. Saving twice returns the existing prospect with HTTP
+**Saving.** Only a persisted `qualified` run from the current rules
+(`qualification-rules/v2`) can justify a save; the backend enforces this.
+For a `preliminary` result, run `POST /companies/{id}/research` and
+qualify again. Saving twice returns the existing prospect with HTTP
 200 and `created: false`, never a duplicate. Errors: `qualification_required`
 and `prospect_not_qualified` (409), `qualification_not_found` and
 `prospect_not_found` (404).

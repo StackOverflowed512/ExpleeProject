@@ -82,6 +82,8 @@ def _research(
 
 
 def _qualified(session: Session, candidate: CompanyCandidate) -> CompanyQualification:
+    """Qualify with industry fit confirmed by (complete) website research."""
+    _research(session, candidate, "Acme builds SaaS for logistics teams.")
     row = run_qualification(session, candidate.id, SAAS, now=T0)
     assert row.status == "qualified"
     return row
@@ -380,10 +382,12 @@ def test_saving_keeps_discovery_and_research_history(db_session: Session) -> Non
     _research(db_session, candidate, "SaaS")
     _research(db_session, candidate, "", outcome="failed")
     _qualified(db_session, candidate)
+    count_research = text("SELECT count(*) FROM company_research")
+    before = db_session.execute(count_research).scalar_one()
     save_prospect(db_session, candidate.id)
 
     db_session.expire_all()
-    assert db_session.execute(text("SELECT count(*) FROM company_research")).scalar_one() == 2
+    assert db_session.execute(count_research).scalar_one() == before == 3
     stored = db_session.get(CompanyCandidate, candidate.id)
     assert stored is not None and stored.source_url == "https://acme.com/"
 
@@ -503,3 +507,98 @@ def test_get_prospect_and_missing_prospect(
     assert qualification.id == prospect.qualification_id
     with pytest.raises(ProspectNotFoundError):
         get_prospect(db_session, 555_555)
+
+
+# -- v2: preliminary results, rule versions, signal lists ---------------------------
+def test_preliminary_result_cannot_be_saved_until_website_confirms(db_session: Session) -> None:
+    candidate = _candidate(
+        db_session,
+        name="Best Software Companies in Berlin | Directory",
+        description="Top SaaS startups.",
+    )
+    preliminary = run_qualification(db_session, candidate.id, SAAS, now=T0)
+    assert preliminary.status == "preliminary"
+    with pytest.raises(ProspectNotQualifiedError, match="research the company's website"):
+        save_prospect(db_session, candidate.id)
+
+    _research(db_session, candidate, "Acme is a SaaS platform for freight.")
+    confirmed = run_qualification(db_session, candidate.id, SAAS, now=T0 + timedelta(hours=1))
+    assert confirmed.status == "qualified"
+    result = save_prospect(db_session, candidate.id)
+    assert result.prospect.qualification_id == confirmed.id
+
+    stored = db_session.get(CompanyQualification, preliminary.id)
+    assert stored is not None and stored.status == "preliminary"  # history kept
+
+
+def test_refuting_website_research_records_unconfirmed_signals(db_session: Session) -> None:
+    candidate = _candidate(db_session, name="Top SaaS Tools 2027", description=None)
+    _research(db_session, candidate, "Handmade ceramics from Porto.")
+    row = run_qualification(db_session, candidate.id, SAAS, now=T0)
+
+    record = to_qualification_record(row)
+    industry = record.factors[0]
+    assert record.status == "unqualified"
+    assert industry.signals_unconfirmed == ["saas"]
+    assert industry.evidence[0].counted is False
+    assert record.matched_signals == []
+
+
+def test_v1_qualified_run_cannot_justify_a_new_save(db_session: Session) -> None:
+    candidate = _candidate(db_session)
+    v1 = CompanyQualification(
+        candidate_id=candidate.id,
+        rule_version="qualification-rules/v1",
+        # Stored v1 criteria may break today's validation (target == exclusion).
+        criteria={
+            "profile": "legacy",
+            "target_keywords": ["saas"],
+            "target_locations": [],
+            "target_tlds": [],
+            "excluded_keywords": ["saas"],
+            "threshold": 60,
+            "min_evidence_coverage": 0.5,
+        },
+        status="qualified",
+        score=100,
+        threshold=60,
+        evidence_coverage=1.0,
+        factors=[],
+        rationale="Qualified under v1.",
+        qualified_at=T0,
+    )
+    db_session.add(v1)
+    db_session.commit()
+
+    with pytest.raises(ProspectNotQualifiedError, match="re-run qualification"):
+        save_prospect(db_session, candidate.id, qualification_id=v1.id)
+    # The legacy row is still readable through history.
+    total, rows = list_qualifications(db_session, candidate.id, limit=5)
+    record = to_qualification_record(rows[0])
+    assert total == 1
+    assert record.rule_version == "qualification-rules/v1"
+    assert record.criteria.excluded_keywords == ["saas"]
+
+
+def test_signal_lists_are_deduplicated(db_session: Session) -> None:
+    candidate = _candidate(db_session, description="Berlin SaaS.")
+    _research(db_session, candidate, "SaaS made in Berlin.")
+    criteria = QualificationCriteria(
+        target_keywords=["saas", "berlin"], target_locations=["berlin", "munich"]
+    )
+    record = to_qualification_record(run_qualification(db_session, candidate.id, criteria))
+    assert record.matched_signals == ["berlin", "saas"]
+    assert record.missing_signals == ["munich"]
+
+
+def test_persisted_v2_factors_include_evidence_levels(db_session: Session) -> None:
+    candidate = _candidate(db_session)
+    row = _qualified(db_session, candidate)
+    db_session.expire_all()
+    stored = db_session.get(CompanyQualification, row.id)
+    assert stored is not None
+    assert stored.rule_version == "qualification-rules/v2"
+    industry = stored.factors[0]
+    assert industry["evidence_level"] == "website"
+    assert industry["evidence"][0]["level"] == "website"
+    assert industry["evidence"][0]["counted"] is True

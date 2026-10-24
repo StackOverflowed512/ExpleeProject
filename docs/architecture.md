@@ -297,8 +297,10 @@ only for tests and offline runs.
 `POST /companies/{id}/qualify` loads the candidate's enrichment (discovery
 fields plus latest usable research, via `get_enrichment`), applies the
 rules, and appends a run. It makes no network requests; research the
-website first for stronger evidence. `POST /companies/{id}/save` saves a
-qualified candidate. `GET /prospects` searches saved prospects.
+website first for stronger evidence. `GET /companies/{id}/qualifications`
+returns `total`, the effective `limit` (1–100, default 20), `latest`, and
+`history` (newest first). `POST /companies/{id}/save` saves a qualified
+candidate. `GET /prospects` searches saved prospects.
 
 **Modules.**
 
@@ -327,43 +329,79 @@ identically.
 | `threshold` | 60 | 1–100 |
 | `min_evidence_coverage` | 0.5 | > 0 and ≤ 1 |
 
-Terms allow letters, digits, spaces, and `- . & + / '`. Weights are fixed by
-the rule version and cannot be supplied by callers.
+Terms allow letters, digits, spaces, and `- . & + / '`. Excluded keywords
+must not repeat a target keyword or location (422), since such a profile
+contradicts itself. Weights are fixed by the rule version and cannot be
+supplied by callers.
 
-**Rules `qualification-rules/v1`.** Evidence is read only from sourced
-fields, in a fixed order: `candidate.name`, `candidate.description`
-(discovery snippet), `research.page_title`, `research.extracted_text`, and
-`candidate.domain` for TLDs. Matching is case-insensitive and whole-word;
-multi-word terms match across any whitespace.
+**Rules `qualification-rules/v2`.** Every piece of evidence has a level:
+
+| Level | Sources | Meaning |
+| --- | --- | --- |
+| `website` | `research.page_title`, `research.extracted_text` (latest usable research, complete or partial) | the company's own pages |
+| `domain` | `candidate.domain` (TLD checks only) | the company's domain name |
+| `discovery` | `candidate.name` (search result title), `candidate.description` (snippet) | third-party search data; often listicles or directories such as "Best Software Companies in Berlin", so only **preliminary** |
+
+Each term is looked up on the website first, then in discovery data.
+Matching is case-insensitive and whole-word; multi-word terms match across
+any whitespace.
 
 | Factor | Weight | matched | not_matched | unknown |
 | --- | --- | --- | --- | --- |
-| `industry_fit` | 50 | a target keyword is found | none found and research is complete | none found; research missing or partial |
-| `location_fit` | 30 | a target location is found or the domain ends in a target TLD | none found and research is complete | none found; research missing or partial |
-| `exclusion_check` | 20 | none found and research is complete | an excluded term is found (**disqualifying**) | none found; research missing or partial |
+| `industry_fit` (**required**) | 50 | a target keyword on the website; or, while research is missing or partial, in discovery data (`discovery` level) | nothing counts and the research page is complete | nothing found; research missing or partial |
+| `location_fit` | 30 | a target location on the website, the domain ends in a target TLD (`domain` level), or, while research is missing or partial, a location in discovery data | nothing counts and the research page is complete | nothing found; research missing or partial |
+| `exclusion_check` | 20 | nothing found and the research page is complete | an excluded term is found anywhere, including discovery data (**disqualifying**; conservative by design) | nothing found; research missing or partial |
 
-A factor without criteria is `not_applicable` and ignored. **Missing data is
-never treated as proof:** absence of a term counts as evidence only when a
-complete (`success`) website page was read. A short discovery snippet or a
-truncated (`partial`) page can support a match but never an absence.
+Once a **complete** (`success`) page was read, terms found only in
+discovery data are reported in `signals_unconfirmed` (their evidence has
+`counted: false`) and do not score. The company's own website did not
+mention them, so the search title is presumed to describe something else.
+A factor without criteria is `not_applicable`. **Missing data is never
+treated as proof:** absence counts only when a complete page was read; a
+snippet or a partial page can support a match but never an absence.
 
 - `score` = round-half-up(100 × points ÷ *evaluated* weight), where the
   evaluated factors are those that are `matched` or `not_matched`. It is 0
   when nothing could be evaluated. Unknown factors never lower the score.
 - `evidence_coverage` = evaluated weight ÷ applicable weight.
-- `status`, in order: `unqualified` if a factor is disqualifying;
-  `insufficient_evidence` if coverage < `min_evidence_coverage`;
-  `qualified` if score ≥ `threshold`; otherwise `unqualified`.
+- `status`, decided in this order:
+  1. `unqualified` if a factor is disqualifying;
+  2. `insufficient_evidence` if coverage < `min_evidence_coverage`;
+  3. `unqualified` if score < `threshold`;
+  4. `unqualified` if industry fit is `not_matched` (required factor);
+  5. `insufficient_evidence` if industry fit is `unknown`;
+  6. `preliminary` if industry fit is matched only at `discovery` level;
+  7. otherwise `qualified`.
 
-So `insufficient_evidence` is distinct from `unqualified`. A candidate with
-no website or no research is not penalized: it is qualified on whatever
-sourced evidence exists, or reported as insufficient. Each factor records
-its result, points, `signals_found` and `signals_not_found`, an
-explanation, and evidence items (signal, source field, source URL, research
-ID, and an excerpt of at most ~160 characters). The `rationale` is a
-deterministic text summary (one line for the decision, one per factor).
-Identical inputs and criteria always give identical results; any change to
-factors, weights, or matching must bump `RULE_VERSION`.
+So **`qualified` requires the industry fit to be confirmed by the company's
+own website**: a complete page, or a partial page that contains the term.
+A candidate whose fit rests only on search-result text is `preliminary`.
+That is a promising lead that cannot be saved until website research
+confirms it. A candidate with no website or no research is not penalized: it is
+`preliminary` or `insufficient_evidence`, never `unqualified` for missing
+data. Because discovery-only matches count only without a complete page,
+and only a complete page can produce `not_matched`, a `preliminary` result
+always scores 100.
+
+Each factor records its result, points, `evidence_level` (strongest counted
+level), `signals_found`, `signals_not_found`, `signals_unconfirmed`, an
+explanation, and evidence items. Each evidence item has the signal, source
+field, `level`, `counted`, source URL, research ID, and an excerpt of at
+most ~160 characters. The `rationale` is a deterministic text summary: one
+line for the decision, one per factor including its evidence level.
+Response-level `matched_signals`, `missing_signals`, and
+`disqualifying_signals` are de-duplicated (first-seen order), and a term
+matched by any factor is not listed as missing. Identical inputs and
+criteria always give identical results.
+
+*Changes from `qualification-rules/v1`:* v1 read sources in the order name
+→ snippet → website, counted a search-title match as full evidence, and
+marked such candidates `qualified`, so a listicle title alone could
+qualify a company. v2 adds evidence levels, website-first lookup, and
+unconfirmed discovery matches. It also makes industry fit required and adds
+the `preliminary` status. Weights, matching, the score formula, and
+exclusion semantics are unchanged. v1 runs stay in history and readable,
+but only v2 runs can justify a new save.
 
 **Qualification model (`company_qualifications`).** Append-only, never
 updated or pruned. Columns: `id`, `candidate_id` (FK, `ON DELETE CASCADE`),
@@ -371,16 +409,23 @@ updated or pruned. Columns: `id`, `candidate_id` (FK, `ON DELETE CASCADE`),
 pruning keeps the run and its evidence excerpts), `rule_version`,
 `criteria` (JSONB, canonical), `status`, `score`, `threshold`,
 `evidence_coverage`, `factors` (JSONB), `rationale`, `qualified_at`,
-`created_at`, `updated_at`. Check constraints cover the status set, score
-0–100, threshold 1–100, and coverage 0–1. Index:
-`(candidate_id, qualified_at)`. `matched_signals`, `missing_signals`, and
-`disqualifying_signals` in responses are derived from `factors` rather than
-stored twice.
+`created_at`, `updated_at`. Check constraints cover the status set
+(`preliminary` added by migration `0004`), score 0–100, threshold 1–100,
+and coverage 0–1. Index: `(candidate_id, qualified_at)`.
+`matched_signals`, `missing_signals`, and `disqualifying_signals` in
+responses are derived from `factors` rather than stored twice. Stored
+criteria are returned through the lenient `StoredCriteria` schema, not
+re-validated, so runs recorded under older validation rules stay
+readable.
 
 **Saved prospect model (`saved_prospects`).** `id`, `candidate_id` (FK,
-`ON DELETE CASCADE`, **unique**), `qualification_id` (FK with no delete
-action, so the justifying run cannot be deleted on its own), `saved_at`,
-and `updated_at`. Candidate and research data are not copied.
+`ON DELETE CASCADE`, **unique**), `qualification_id` (FK, explicitly
+`ON DELETE NO ACTION`, so the justifying run cannot be deleted on its
+own), `saved_at`, and `updated_at`. `NO ACTION` rather than `RESTRICT`:
+PostgreSQL checks `NO ACTION` at the end of the statement, so deleting
+the candidate can cascade to both the prospect and its qualification,
+whereas `RESTRICT` is checked immediately and could block that cascade.
+Candidate and research data are not copied.
 
 **Saving rules** (enforced in `app/services/prospects.py`):
 
@@ -392,8 +437,10 @@ and `updated_at`. Candidate and research data are not copied.
    (which must belong to the candidate, else 404
    `qualification_not_found`) or the candidate's latest run (none: 409
    `qualification_required`).
-4. It must have status `qualified` and a score at or above its recorded
-   threshold (else 409 `prospect_not_qualified`).
+4. It must come from a saveable rule version (currently only
+   `qualification-rules/v2`), have status `qualified` (`preliminary` is
+   refused with a hint to research the website), and have a score at or
+   above its recorded threshold (else 409 `prospect_not_qualified`).
 5. The insert uses `ON CONFLICT (candidate_id) DO NOTHING`. If a
    concurrent request won, its row is returned with `created: false`, and
    the unique constraint guarantees there are no duplicates.

@@ -29,11 +29,12 @@ class SavedProspect(Base):
         nullable=False,
         unique=True,
     )
-    # No ON DELETE action: a qualification that justifies a prospect cannot
-    # be deleted on its own. Deleting the candidate removes both rows in the
-    # same statement.
+    # ON DELETE NO ACTION (stated explicitly): a qualification that justifies
+    # a prospect cannot be deleted on its own. NO ACTION rather than RESTRICT
+    # because the check runs at the end of the statement, so deleting the
+    # candidate can cascade to both the prospect and its qualification.
     qualification_id: Mapped[int] = mapped_column(
-        ForeignKey("company_qualifications.id"),
+        ForeignKey("company_qualifications.id", ondelete="NO ACTION"),
         nullable=False,
     )
     saved_at: Mapped[datetime] = mapped_column(

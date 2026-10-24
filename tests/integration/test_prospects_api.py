@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import get_session, get_session_factory
 from app.models.company_candidate import CompanyCandidate
+from app.models.company_research import CompanyResearch
 from app.schemas.search import SearchResultItem
 from app.services.providers.fake import FakeSearchProvider
 from app.services.providers.website import FetchOutcome, FetchResult
@@ -98,7 +99,9 @@ def make_candidate(
         name: str = "Acme Corp",
         domain: str = "acme.com",
         description: str | None = "Acme builds SaaS.",
+        research_text: str | None = "Acme builds SaaS for logistics teams.",
     ) -> int:
+        """Create a candidate, plus complete website research unless disabled."""
         with db_session_factory() as session:
             candidate = CompanyCandidate(
                 name=name,
@@ -109,6 +112,19 @@ def make_candidate(
                 source_url=f"https://{domain}/",
             )
             session.add(candidate)
+            session.flush()
+            if research_text is not None:
+                session.add(
+                    CompanyResearch(
+                        candidate_id=candidate.id,
+                        requested_url=candidate.website_url,
+                        final_url=candidate.website_url,
+                        fetched_at=datetime(2026, 10, 24, 8, 0, tzinfo=UTC),
+                        fetcher="fake",
+                        outcome="success",
+                        extracted_text=research_text,
+                    )
+                )
             session.commit()
             return candidate.id
 
@@ -196,7 +212,7 @@ async def test_qualify_with_defaults_and_response_shape(
         "qualified_at",
         "created_at",
     }
-    assert body["rule_version"] == "qualification-rules/v1"
+    assert body["rule_version"] == "qualification-rules/v2"
     assert body["criteria"]["profile"] == "default-b2b-software"
     assert body["criteria"]["target_keywords"] == ["b2b", "platform", "saas", "software"]
     assert body["status"] == "qualified"
@@ -210,6 +226,8 @@ async def test_qualify_with_defaults_and_response_shape(
         "disqualifying",
         "signals_found",
         "signals_not_found",
+        "signals_unconfirmed",
+        "evidence_level",
         "evidence",
         "explanation",
     }
@@ -218,7 +236,7 @@ async def test_qualify_with_defaults_and_response_shape(
 async def test_insufficient_evidence_is_reported_distinctly(
     client: Any, make_candidate: Any
 ) -> None:
-    candidate_id = make_candidate(description=None)
+    candidate_id = make_candidate(description=None, research_text=None)
     async with client as http:
         response = await http.post(f"/companies/{candidate_id}/qualify", json=SAAS)
     body = response.json()
@@ -233,7 +251,7 @@ async def test_qualification_history_is_newest_first(client: Any, make_candidate
         first = await http.post(f"/companies/{candidate_id}/qualify", json=SAAS)
         second = await http.post(
             f"/companies/{candidate_id}/qualify",
-            json={"criteria": {"target_keywords": ["saas"], "excluded_keywords": ["saas"]}},
+            json={"criteria": {"target_keywords": ["saas"], "excluded_keywords": ["logistics"]}},
         )
         history = await http.get(f"/companies/{candidate_id}/qualifications")
         limited = await http.get(f"/companies/{candidate_id}/qualifications", params={"limit": 1})
@@ -243,7 +261,8 @@ async def test_qualification_history_is_newest_first(client: Any, make_candidate
     assert [r["id"] for r in body["history"]] == [second.json()["id"], first.json()["id"]]
     assert body["latest"]["id"] == second.json()["id"]
     assert body["latest"]["status"] == "unqualified"
-    assert body["latest"]["disqualifying_signals"] == ["saas"]
+    assert body["latest"]["disqualifying_signals"] == ["logistics"]
+    assert body["limit"] == 20
     assert limited.json()["total"] == 2
     assert len(limited.json()["history"]) == 1
 
@@ -257,6 +276,7 @@ async def test_history_for_unqualified_candidate_is_empty(
     assert response.json() == {
         "candidate_id": candidate_id,
         "total": 0,
+        "limit": 20,
         "latest": None,
         "history": [],
     }
@@ -288,7 +308,7 @@ async def test_save_without_qualification_is_conflict(client: Any, make_candidat
 
 
 async def test_save_below_threshold_is_conflict(client: Any, make_candidate: Any) -> None:
-    candidate_id = make_candidate(description=None)
+    candidate_id = make_candidate(description=None, research_text=None)
     async with client as http:
         await http.post(f"/companies/{candidate_id}/qualify", json=SAAS)
         response = await http.post(f"/companies/{candidate_id}/save")
@@ -296,6 +316,43 @@ async def test_save_below_threshold_is_conflict(client: Any, make_candidate: Any
     error = _assert_envelope(response, 409, "prospect_not_qualified")
     assert "insufficient_evidence" in error["message"]
     assert listing.json()["total"] == 0
+
+
+async def test_preliminary_result_requires_website_confirmation(
+    client: Any, make_candidate: Any, fetcher: FakeWebsiteFetcher
+) -> None:
+    candidate_id = make_candidate(
+        name="Top 20 SaaS Companies in Logistics", research_text=None
+    )
+    async with client as http:
+        preliminary = await http.post(f"/companies/{candidate_id}/qualify", json=SAAS)
+        refused = await http.post(f"/companies/{candidate_id}/save")
+        await http.post(f"/companies/{candidate_id}/research")
+        confirmed = await http.post(f"/companies/{candidate_id}/qualify", json=SAAS)
+        saved = await http.post(f"/companies/{candidate_id}/save")
+
+    body = preliminary.json()
+    assert body["status"] == "preliminary"
+    assert body["factors"][0]["evidence_level"] == "discovery"
+    error = _assert_envelope(refused, 409, "prospect_not_qualified")
+    assert "research the company's website" in error["message"]
+    assert fetcher.calls == [URL]
+    assert confirmed.json()["status"] == "qualified"
+    assert confirmed.json()["factors"][0]["evidence_level"] == "website"
+    assert saved.status_code == 201
+    assert saved.json()["prospect"]["qualification"]["id"] == confirmed.json()["id"]
+
+
+async def test_contradictory_criteria_are_rejected(client: Any, make_candidate: Any) -> None:
+    candidate_id = make_candidate()
+    async with client as http:
+        response = await http.post(
+            f"/companies/{candidate_id}/qualify",
+            json={"criteria": {"target_keywords": ["saas"], "excluded_keywords": ["saas"]}},
+        )
+        history = await http.get(f"/companies/{candidate_id}/qualifications")
+    _assert_envelope(response, 422, "validation_error")
+    assert history.json()["total"] == 0
 
 
 async def test_duplicate_save_returns_200_with_existing(client: Any, make_candidate: Any) -> None:

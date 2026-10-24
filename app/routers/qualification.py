@@ -88,6 +88,7 @@ def read_qualifications(
     return QualificationHistoryResponse(
         candidate_id=candidate_id,
         total=total,
+        limit=limit,
         latest=history[0] if history else None,
         history=history,
     )

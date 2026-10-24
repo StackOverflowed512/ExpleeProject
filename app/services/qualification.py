@@ -24,14 +24,17 @@ from app.schemas.qualification import (
     QualificationRecord,
     QualificationStatus,
     QualificationSummary,
+    StoredCriteria,
 )
 from app.services.enrichment import get_enrichment
-from app.services.qualification_rules import evaluate
+from app.services.qualification_rules import RULE_VERSION, evaluate
 from app.services.research import get_candidate
 
 logger = logging.getLogger(__name__)
 
 _POSITIVE_FACTORS = frozenset({"industry_fit", "location_fit"})
+# Rule versions whose 'qualified' results may justify saving a prospect.
+SAVEABLE_RULE_VERSIONS = frozenset({RULE_VERSION})
 
 
 class QualificationPersistenceError(Exception):
@@ -120,11 +123,25 @@ def list_qualifications(
 
 
 def is_eligible(row: CompanyQualification) -> bool:
-    """Whether a persisted run justifies saving the candidate as a prospect."""
-    return row.status == "qualified" and row.score >= row.threshold
+    """Whether a persisted run justifies saving the candidate as a prospect.
+
+    Only runs from :data:`SAVEABLE_RULE_VERSIONS` qualify: v1 could mark a
+    candidate ``qualified`` from search-result text alone, so a v1 result
+    must be re-run before saving. Existing prospects are not affected.
+    """
+    return (
+        row.rule_version in SAVEABLE_RULE_VERSIONS
+        and row.status == "qualified"
+        and row.score >= row.threshold
+    )
 
 
 # -- serialization ------------------------------------------------------
+def _unique(values: list[str]) -> list[str]:
+    """De-duplicate while keeping first-seen order (deterministic)."""
+    return list(dict.fromkeys(values))
+
+
 def to_qualification_record(row: CompanyQualification) -> QualificationRecord:
     factors = [FactorOutcome.model_validate(item) for item in row.factors]
     matched: list[str] = []
@@ -136,12 +153,17 @@ def to_qualification_record(row: CompanyQualification) -> QualificationRecord:
             missing.extend(factor.signals_not_found)
         elif factor.disqualifying:
             disqualifying.extend(factor.signals_found)
+    matched = _unique(matched)
+    # A term found by one factor is not "missing" overall.
+    missing = [term for term in _unique(missing) if term not in matched]
     return QualificationRecord(
         id=row.id,
         candidate_id=row.candidate_id,
         research_id=row.research_id,
         rule_version=row.rule_version,
-        criteria=QualificationCriteria.model_validate(row.criteria),
+        # Stored criteria were validated when the run was created; the
+        # lenient snapshot keeps runs recorded under older rules readable.
+        criteria=StoredCriteria.model_validate(row.criteria),
         status=cast(QualificationStatus, row.status),
         score=row.score,
         threshold=row.threshold,

@@ -7,9 +7,11 @@ import unicodedata
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-QualificationStatus = Literal["qualified", "unqualified", "insufficient_evidence"]
+QualificationStatus = Literal[
+    "qualified", "preliminary", "unqualified", "insufficient_evidence"
+]
 FactorResult = Literal["matched", "not_matched", "unknown", "not_applicable"]
 FactorKey = Literal["industry_fit", "location_fit", "exclusion_check"]
 EvidenceSource = Literal[
@@ -19,6 +21,10 @@ EvidenceSource = Literal[
     "research.page_title",
     "research.extracted_text",
 ]
+# How strongly a piece of evidence speaks for the company itself:
+# "website" = the company's own pages, "domain" = its domain name,
+# "discovery" = a third-party search result title or snippet.
+EvidenceLevel = Literal["website", "domain", "discovery"]
 
 MAX_TERMS = 25
 MAX_TERM_LENGTH = 60
@@ -33,10 +39,12 @@ DEFAULT_THRESHOLD = 60
 DEFAULT_MIN_EVIDENCE_COVERAGE = 0.5
 
 _STATUS_DESCRIPTION = (
-    "'qualified': enough evidence and score >= threshold. 'unqualified': an "
-    "excluded term was found, or the evidence is sufficient but the score is "
-    "below the threshold. 'insufficient_evidence': too few factors could be "
-    "evaluated from sourced data to decide."
+    "'qualified': score >= threshold with enough evidence, and industry fit "
+    "confirmed by the company's own website. 'preliminary': the score meets the "
+    "threshold but industry fit rests only on search-result data; research the "
+    "website to confirm (cannot be saved). 'unqualified': an excluded term was "
+    "found, industry fit is not met, or the score is below the threshold. "
+    "'insufficient_evidence': too little could be evaluated from sourced data."
 )
 
 
@@ -186,6 +194,36 @@ class QualificationCriteria(BaseModel):
     def _round_coverage(cls, value: float) -> float:
         return round(value, 4)
 
+    @model_validator(mode="after")
+    def _no_contradictory_terms(self) -> "QualificationCriteria":
+        overlap = set(self.excluded_keywords) & (
+            set(self.target_keywords) | set(self.target_locations)
+        )
+        if overlap:
+            raise ValueError(
+                "excluded_keywords must not repeat target terms: "
+                + ", ".join(sorted(overlap))
+            )
+        return self
+
+
+class StoredCriteria(BaseModel):
+    """Criteria exactly as recorded with a run (output only).
+
+    Not re-validated: a run keeps the profile it was evaluated with even if
+    input validation later becomes stricter. Unknown keys are preserved.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    profile: str
+    target_keywords: list[str]
+    target_locations: list[str]
+    target_tlds: list[str]
+    excluded_keywords: list[str]
+    threshold: int
+    min_evidence_coverage: float
+
 
 class QualifyRequest(BaseModel):
     """Body of ``POST /companies/{id}/qualify``. Omit ``criteria`` for defaults."""
@@ -206,6 +244,17 @@ class Evidence(BaseModel):
     )
     research_id: int | None = None
     excerpt: str = Field(description="Text around the match (at most ~160 characters).")
+    level: EvidenceLevel | None = Field(
+        default=None,
+        description="website, domain, or discovery (absent on v1 runs).",
+    )
+    counted: bool = Field(
+        default=True,
+        description=(
+            "False for discovery-only matches the complete website page did not "
+            "confirm; they are reported but do not score."
+        ),
+    )
 
 
 class FactorOutcome(BaseModel):
@@ -221,6 +270,17 @@ class FactorOutcome(BaseModel):
     )
     signals_found: list[str] = Field(description="Criteria terms found in sourced data.")
     signals_not_found: list[str] = Field(description="Criteria terms not found.")
+    signals_unconfirmed: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Terms found only in search-result data and not on the complete "
+            "website page; reported but not counted."
+        ),
+    )
+    evidence_level: EvidenceLevel | None = Field(
+        default=None,
+        description="Strongest level among the counted evidence, if matched.",
+    )
     evidence: list[Evidence]
     explanation: str
 
@@ -232,7 +292,7 @@ class QualificationRecord(BaseModel):
     candidate_id: int
     research_id: int | None = None
     rule_version: str
-    criteria: QualificationCriteria
+    criteria: StoredCriteria
     status: QualificationStatus = Field(description=_STATUS_DESCRIPTION)
     score: int = Field(ge=0, le=100)
     threshold: int
@@ -270,5 +330,6 @@ class QualificationHistoryResponse(BaseModel):
 
     candidate_id: int
     total: int = Field(description="Total runs stored for the candidate.")
+    limit: int = Field(description="Maximum runs returned in `history`.")
     latest: QualificationRecord | None = None
     history: list[QualificationRecord]

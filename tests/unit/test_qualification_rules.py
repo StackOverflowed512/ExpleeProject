@@ -155,11 +155,16 @@ def test_industry_matched_from_discovery_snippet() -> None:
     assert factor.result == "matched"
     assert factor.points == INDUSTRY_WEIGHT
     assert factor.signals_found == ["saas"]
+    assert factor.evidence_level == "discovery"
     (evidence,) = factor.evidence
     assert evidence.source == "candidate.description"
+    assert evidence.level == "discovery"
+    assert evidence.counted is True
     assert evidence.source_url == "https://acme.de/"
     assert evidence.research_id is None
     assert "SaaS" in evidence.excerpt
+    # A search-result match alone is preliminary, never a saveable decision.
+    assert evaluation.status == "preliminary"
 
 
 def test_industry_matched_from_research_with_provenance() -> None:
@@ -184,12 +189,21 @@ def test_multi_word_terms_match_across_whitespace() -> None:
     assert factor.result == "matched"
 
 
-def test_source_order_is_fixed_name_then_description_then_research() -> None:
+def test_website_evidence_is_preferred_over_discovery_data() -> None:
     company = _company(
         name="SaaS Corp",
         description="A SaaS company.",
         website=_research("More SaaS."),
     )
+    factor = _factor(evaluate(company, _criteria()), "industry_fit")
+    (evidence,) = factor.evidence
+    assert evidence.source == "research.extracted_text"
+    assert evidence.level == "website"
+    assert factor.evidence_level == "website"
+
+
+def test_discovery_source_order_is_name_then_description() -> None:
+    company = _company(name="SaaS Corp", description="A SaaS company.")
     (evidence,) = _factor(evaluate(company, _criteria()), "industry_fit").evidence
     assert evidence.source == "candidate.name"
 
@@ -234,7 +248,9 @@ def test_missing_website_is_not_treated_as_a_bad_prospect() -> None:
         website_url=None, domain=None, description="Berlin-based B2B SaaS startup."
     )
     evaluation = evaluate(company, _criteria())
-    assert evaluation.status == "qualified"
+    # Neither unqualified nor insufficient: a promising lead awaiting research.
+    assert evaluation.status == "preliminary"
+    assert evaluation.score == 100
     assert evaluation.research_id is None
 
 
@@ -370,11 +386,15 @@ def test_score_combinations(
     assert evaluation.score == expected
 
 
+def _partial_saas_page() -> EnrichedCompany:
+    # Industry is confirmed on a partial page; location and exclusion stay
+    # unknown because a partial page cannot prove absence.
+    return _company(domain="acme.com", website=_research("SaaS company.", outcome="partial"))
+
+
 def test_unknown_factors_do_not_lower_the_score() -> None:
-    # Only industry is evaluable (matched); location and exclusion are unknown.
-    company = _company(domain="acme.com", description="SaaS company.")
     evaluation = evaluate(
-        company, _criteria(target_locations=["berlin"], excluded_keywords=["casino"])
+        _partial_saas_page(), _criteria(target_locations=["berlin"], excluded_keywords=["casino"])
     )
     assert evaluation.score == 100
     assert evaluation.evidence_coverage == 0.5
@@ -385,7 +405,7 @@ def test_unknown_factors_do_not_lower_the_score() -> None:
     ("minimum", "status"), [(0.5, "qualified"), (0.51, "insufficient_evidence")]
 )
 def test_evidence_coverage_boundary(minimum: float, status: str) -> None:
-    company = _company(domain="acme.com", description="SaaS company.")
+    company = _partial_saas_page()
     evaluation = evaluate(
         company,
         _criteria(
@@ -410,7 +430,7 @@ def test_identical_inputs_produce_identical_results() -> None:
     first = evaluate(_company(website=_research()), criteria)
     second = evaluate(_company(website=_research()), criteria)
     assert first == second
-    assert first.rule_version == RULE_VERSION == "qualification-rules/v1"
+    assert first.rule_version == RULE_VERSION == "qualification-rules/v2"
 
 
 def test_equivalent_criteria_spellings_give_identical_results() -> None:
@@ -429,9 +449,9 @@ def test_rationale_explains_every_factor() -> None:
     assert lines[0].startswith("Qualified: score 100 meets the threshold 60.")
     assert RULE_VERSION in lines[0]
     assert len(lines) == 4
-    assert lines[1].startswith("- Industry fit (matched, 50/50)")
-    assert lines[2].startswith("- Location fit (matched, 30/30)")
-    assert lines[3].startswith("- Exclusion check (matched, 20/20)")
+    assert lines[1].startswith("- Industry fit (matched, website evidence, 50/50)")
+    assert lines[2].startswith("- Location fit (matched, website evidence, 30/30)")
+    assert lines[3].startswith("- Exclusion check (matched, website evidence, 20/20)")
 
 
 def test_excerpts_are_bounded() -> None:
@@ -441,3 +461,233 @@ def test_excerpts_are_bounded() -> None:
     ).evidence
     assert len(evidence.excerpt) <= 170
     assert evidence.excerpt.startswith("…") and evidence.excerpt.endswith("…")
+
+
+# -- v2: misleading search results and evidence levels ------------------------------
+LISTICLE_TITLE = "Best Software Companies to Work for in Berlin | Wellfound"
+LISTICLE_SNIPPET = "Discover the top 50 software and SaaS startups hiring in Berlin."
+DEFAULTS = QualificationCriteria()  # b2b, platform, saas, software; threshold 60
+
+
+def test_misleading_title_without_research_is_only_preliminary() -> None:
+    company = _company(name=LISTICLE_TITLE, description=LISTICLE_SNIPPET, domain="wellfound.com")
+    evaluation = evaluate(company, DEFAULTS)
+    industry = _factor(evaluation, "industry_fit")
+    assert industry.result == "matched"
+    assert industry.evidence_level == "discovery"
+    assert industry.signals_found == ["saas", "software"]
+    assert "not yet confirmed by the company's website" in industry.explanation
+    assert evaluation.score == 100
+    assert evaluation.status == "preliminary"
+    assert "research the company's website" in evaluation.rationale
+
+
+def test_misleading_title_is_refuted_by_complete_research() -> None:
+    company = _company(
+        name=LISTICLE_TITLE,
+        description=LISTICLE_SNIPPET,
+        domain="oakworks.com",
+        website=_research("Handcrafted oak furniture made in Bavaria.", title="Oakworks"),
+    )
+    criteria = _criteria(target_keywords=["software", "saas"], target_locations=["berlin"])
+    evaluation = evaluate(company, criteria)
+    industry = _factor(evaluation, "industry_fit")
+    location = _factor(evaluation, "location_fit")
+    assert industry.result == "not_matched"
+    assert industry.signals_found == []
+    assert industry.signals_unconfirmed == ["saas", "software"]
+    assert all(item.counted is False for item in industry.evidence)
+    assert "not on the complete website page" in industry.explanation
+    assert location.result == "not_matched"
+    assert location.signals_unconfirmed == ["berlin"]
+    assert evaluation.score == 0
+    assert evaluation.status == "unqualified"
+
+
+def test_generic_term_in_snippet_with_partial_research_stays_preliminary() -> None:
+    company = _company(
+        description="Enterprise software reviews and rankings.",
+        website=_research("Furniture catalogue page 1 of 40", outcome="partial", title=None),
+    )
+    evaluation = evaluate(company, _criteria(target_keywords=["software"]))
+    industry = _factor(evaluation, "industry_fit")
+    assert industry.result == "matched"
+    assert industry.evidence_level == "discovery"
+    assert "partial" in industry.explanation
+    assert evaluation.status == "preliminary"
+
+
+def test_website_confirmation_upgrades_preliminary_to_qualified() -> None:
+    snippet_only = _company(description="A B2B SaaS platform.")
+    confirmed = _company(
+        description="A B2B SaaS platform.",
+        website=_research("Acme is a B2B SaaS platform for fleets."),
+    )
+    assert evaluate(snippet_only, DEFAULTS).status == "preliminary"
+    evaluation = evaluate(confirmed, DEFAULTS)
+    assert evaluation.status == "qualified"
+    assert _factor(evaluation, "industry_fit").evidence_level == "website"
+
+
+def test_partial_research_match_counts_as_website_evidence() -> None:
+    company = _company(website=_research("A SaaS platform.", outcome="partial"))
+    evaluation = evaluate(company, _criteria())
+    assert _factor(evaluation, "industry_fit").evidence_level == "website"
+    assert evaluation.status == "qualified"
+
+
+def test_mixed_website_and_unconfirmed_discovery_terms() -> None:
+    company = _company(
+        name="Top Software Vendors",
+        website=_research("Acme is a B2B SaaS company."),
+    )
+    industry = _factor(evaluate(company, DEFAULTS), "industry_fit")
+    assert industry.signals_found == ["b2b", "saas"]
+    assert industry.signals_unconfirmed == ["software"]
+    assert industry.signals_not_found == ["platform"]
+    assert industry.evidence_level == "website"
+
+
+def test_discovery_terms_still_count_alongside_website_terms_without_complete_page() -> None:
+    company = _company(
+        name="Top Software Vendors",
+        website=_research("Acme is a SaaS company.", outcome="partial"),
+    )
+    criteria = _criteria(target_keywords=["saas", "software"])
+    industry = _factor(evaluate(company, criteria), "industry_fit")
+    assert industry.signals_found == ["saas", "software"]
+    assert industry.signals_unconfirmed == []
+    assert {e.level for e in industry.evidence} == {"website", "discovery"}
+    assert industry.evidence_level == "website"
+
+
+def test_domain_tld_counts_even_when_complete_page_lacks_location() -> None:
+    company = _company(domain="acme.de", website=_research("A SaaS company.", title=None))
+    location = _factor(evaluate(company, _criteria(target_tlds=["de"])), "location_fit")
+    assert location.result == "matched"
+    assert location.evidence_level == "domain"
+
+
+def test_industry_is_required_even_if_other_factors_reach_threshold() -> None:
+    company = _company(domain="acme.com", website=_research("Furniture made in Berlin."))
+    evaluation = evaluate(
+        company,
+        _criteria(target_locations=["berlin"], excluded_keywords=["casino"], threshold=50),
+    )
+    assert evaluation.score == 50  # 0 + 30 + 20 of 100
+    assert evaluation.status == "unqualified"
+    assert "industry fit, a required factor, is not met" in evaluation.rationale
+
+
+def test_unknown_industry_with_low_coverage_minimum_is_insufficient() -> None:
+    company = _company(
+        domain="acme.com",
+        website=_research("Offices in Berlin.", outcome="partial", title=None),
+    )
+    evaluation = evaluate(
+        company,
+        _criteria(
+            target_locations=["berlin"], excluded_keywords=["casino"], min_evidence_coverage=0.3
+        ),
+    )
+    assert _factor(evaluation, "industry_fit").result == "unknown"
+    assert evaluation.evidence_coverage == 0.3
+    assert evaluation.score == 100
+    assert evaluation.status == "insufficient_evidence"
+    assert "could not be evaluated" in evaluation.rationale
+
+
+@pytest.mark.parametrize(
+    ("threshold", "status"), [(63, "qualified"), (64, "unqualified")]
+)
+def test_threshold_boundary_with_website_evidence(threshold: int, status: str) -> None:
+    evaluation = evaluate(
+        _industry_hit_location_miss(), _criteria(target_locations=["berlin"], threshold=threshold)
+    )
+    assert evaluation.score == 63
+    assert evaluation.status == status
+
+
+def test_preliminary_results_always_score_100() -> None:
+    """Discovery-only matches count only without a complete page, and only a
+    complete page can produce ``not_matched``; so nothing can lower the score
+    of a preliminary result, even at the highest threshold."""
+    company = _company(
+        domain="acme.com",
+        description="SaaS",
+        website=_research("Catalogue page", outcome="partial", title=None),
+    )
+    evaluation = evaluate(company, _criteria(threshold=100, target_tlds=["de"]))
+    assert (evaluation.score, evaluation.status) == (100, "preliminary")
+    assert _factor(evaluation, "location_fit").result == "unknown"
+
+
+def test_excluded_term_in_listicle_title_still_disqualifies_conservatively() -> None:
+    company = _company(
+        name="Top 10 Recruitment Agency Picks",
+        website=_research("Acme is a B2B SaaS company."),
+    )
+    evaluation = evaluate(
+        company, _criteria(target_keywords=["saas"], excluded_keywords=["recruitment agency"])
+    )
+    exclusion = _factor(evaluation, "exclusion_check")
+    assert exclusion.disqualifying is True
+    assert exclusion.evidence[0].level == "discovery"
+    assert evaluation.status == "unqualified"
+
+
+def test_non_matched_factors_have_no_evidence_level() -> None:
+    evaluation = evaluate(_company(website=_research("Furniture.")), _criteria())
+    assert _factor(evaluation, "industry_fit").evidence_level is None
+    assert _factor(evaluation, "location_fit").evidence_level is None
+
+
+def test_v2_results_are_deterministic_for_misleading_inputs() -> None:
+    company = _company(name=LISTICLE_TITLE, description=LISTICLE_SNIPPET)
+    assert evaluate(company, DEFAULTS) == evaluate(company, DEFAULTS)
+
+
+# -- criteria and stored-row compatibility ------------------------------------------
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"target_keywords": ["saas"], "excluded_keywords": ["SaaS"]},
+        {
+            "target_keywords": ["saas"],
+            "target_locations": ["berlin"],
+            "excluded_keywords": ["berlin"],
+        },
+    ],
+)
+def test_contradictory_criteria_are_rejected(values: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="must not repeat target terms"):
+        QualificationCriteria.model_validate(values)
+
+
+def test_v1_factor_payload_still_parses() -> None:
+    from app.schemas.qualification import FactorOutcome
+
+    v1 = {
+        "key": "industry_fit",
+        "label": "Industry fit",
+        "weight": 50,
+        "result": "matched",
+        "points": 50,
+        "disqualifying": False,
+        "signals_found": ["saas"],
+        "signals_not_found": [],
+        "evidence": [
+            {
+                "signal": "saas",
+                "source": "candidate.name",
+                "source_url": "https://acme.de/",
+                "research_id": None,
+                "excerpt": "SaaS Corp",
+            }
+        ],
+        "explanation": "Found 'saas' in candidate.name.",
+    }
+    factor = FactorOutcome.model_validate(v1)
+    assert factor.signals_unconfirmed == []
+    assert factor.evidence_level is None
+    assert factor.evidence[0].level is None

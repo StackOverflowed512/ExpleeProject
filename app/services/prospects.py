@@ -9,8 +9,9 @@ Saving rules (enforced here, not only in request validation):
 3. Otherwise a persisted qualification is required: the one named by
    ``qualification_id`` (which must belong to the candidate) or, when
    omitted, the candidate's latest run.
-4. That qualification must have status ``qualified`` and a score at or
-   above its own recorded threshold.
+4. That qualification must come from a current rule version
+   (``SAVEABLE_RULE_VERSIONS``), have status ``qualified`` (not
+   ``preliminary``), and have a score at or above its recorded threshold.
 
 The unique constraint on ``saved_prospects.candidate_id`` is the final
 guard: inserts use ``ON CONFLICT DO NOTHING``, so a concurrent save of the
@@ -33,6 +34,7 @@ from app.models.saved_prospect import SavedProspect
 from app.schemas.discovery import CandidateSummary
 from app.schemas.prospects import ProspectDetail, ProspectQuery, ProspectSummary
 from app.services.qualification import (
+    SAVEABLE_RULE_VERSIONS,
     is_eligible,
     latest_qualification,
     to_qualification_record,
@@ -106,10 +108,18 @@ def _justifying_qualification(
                 f"company candidate {candidate_id}."
             )
     if not is_eligible(qualification):
+        if qualification.rule_version not in SAVEABLE_RULE_VERSIONS:
+            hint = (
+                f"it was produced by {qualification.rule_version}; re-run qualification "
+                f"to apply {', '.join(sorted(SAVEABLE_RULE_VERSIONS))}"
+            )
+        elif qualification.status == "preliminary":
+            hint = "research the company's website and re-run qualification to confirm it"
+        else:
+            hint = "only a qualified result can be saved"
         raise ProspectNotQualifiedError(
             f"Qualification {qualification.id} has status '{qualification.status}' "
-            f"(score {qualification.score}, threshold {qualification.threshold}); "
-            "only a qualified result can be saved."
+            f"(score {qualification.score}, threshold {qualification.threshold}); {hint}."
         )
     return qualification
 
