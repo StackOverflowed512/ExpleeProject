@@ -7,11 +7,11 @@ Personal AI-powered sales intelligence and outreach platform. Two modules:
 - **Outreach Agent** — build campaigns from saved prospects, generate drafts,
   obtain explicit human approval, and send through a configurable provider.
 
-This repository currently contains **Phases 0, 1, 1.1, and 2**: application
-skeleton, configuration, health endpoint, error contract, database wiring,
-migrations, Explorer company discovery backed by Tavily Search, and website
-research and enrichment of discovered candidates. Qualification, saved
-prospects, and outreach features are not implemented yet.
+This repository currently contains **Phases 0, 1, 1.1, 2, and 3**:
+application skeleton, configuration, health endpoint, error contract,
+database wiring, migrations, Explorer company discovery backed by Tavily
+Search, website research and enrichment, deterministic qualification, and
+saved prospects with search. Outreach features are not implemented yet.
 
 ## Prerequisites
 
@@ -188,15 +188,19 @@ Revisions:
 | --- | --- | --- |
 | `0001_company_candidates` | P1 | `company_candidates` and its partial unique indexes |
 | `0002_company_research` | P2 | `company_research` (FK to candidates, `ON DELETE CASCADE`) |
+| `0003_qualification_prospects` | P3 | `company_qualifications` (append-only runs) and `saved_prospects` (unique per candidate) |
 
-An existing Phase 1 database upgrades in place with `alembic upgrade head`.
-Existing candidates are untouched. To roll back only Phase 2, run
-`alembic downgrade 0001_company_candidates`, which drops `company_research`.
-Verify the schema afterwards:
+Existing Phase 1 and Phase 2 databases upgrade in place with
+`alembic upgrade head`. Every revision is additive, so existing candidates
+and research are untouched. To roll back only Phase 3, run
+`alembic downgrade 0002_company_research`. That drops the qualification and
+prospect tables **and their data**. Verify the schema afterwards:
 
 ```powershell
 psql -U postgres -h localhost -d explee -c "\d company_candidates"
 psql -U postgres -h localhost -d explee -c "\d company_research"
+psql -U postgres -h localhost -d explee -c "\d company_qualifications"
+psql -U postgres -h localhost -d explee -c "\d saved_prospects"
 ```
 
 Useful commands:
@@ -289,6 +293,66 @@ stored as third-party content, not verified facts. Each candidate keeps its
 five most recent attempts plus the latest usable one. Full details and
 residual limitations are in `docs/architecture.md`.
 
+## 5d. Qualify, save, and search prospects
+
+Qualification applies deterministic, versioned rules
+(`qualification-rules/v1`) to the candidate's **stored** discovery data and
+latest usable research. It makes no network or AI calls, so research the
+website first for stronger evidence. Describe your target market in
+`criteria`, or omit it to use the defaults (`b2b`, `platform`, `saas`,
+`software`; threshold 60).
+
+```powershell
+$criteria = @{ criteria = @{ profile = "berlin-saas"; target_keywords = @("saas", "b2b"); target_locations = @("berlin", "germany"); target_tlds = @("de"); excluded_keywords = @("recruitment agency"); threshold = 60 } } | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/companies/1/qualify -ContentType "application/json" -Body $criteria | ConvertTo-Json -Depth 8
+
+# Qualification history (newest first)
+Invoke-RestMethod http://127.0.0.1:8000/companies/1/qualifications | ConvertTo-Json -Depth 8
+
+# Save (uses the latest qualification; 409 unless it is "qualified")
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/companies/1/save -ContentType "application/json" -Body '{}' | ConvertTo-Json -Depth 5
+
+# Search saved prospects
+Invoke-RestMethod "http://127.0.0.1:8000/prospects?q=acme&min_score=60&sort=score_desc&limit=20" | ConvertTo-Json -Depth 5
+Invoke-RestMethod http://127.0.0.1:8000/prospects/1 | ConvertTo-Json -Depth 8
+```
+
+**Scoring.** There are three factors: `industry_fit` (50 points),
+`location_fit` (30), and `exclusion_check` (20). A factor you don't
+configure is `not_applicable`.
+
+- A factor is **unknown** (rather than failed) when the evidence is
+  missing: a term's absence only counts if a complete website page was
+  read.
+- The score is points ÷ evaluated weight × 100, so missing data never
+  lowers it.
+- Results:
+  - an excluded term found → `unqualified`;
+  - fewer than `min_evidence_coverage` (default 50%) of the factor weight
+    evaluable → `insufficient_evidence`;
+  - otherwise score ≥ threshold → `qualified`, else `unqualified`.
+
+Each run stores its criteria, factors, evidence excerpts with source URLs,
+and a plain-text rationale. Runs are never overwritten.
+
+**Saving.** Only a persisted `qualified` run can justify a save; the
+backend enforces this. Saving twice returns the existing prospect with HTTP
+200 and `created: false`, never a duplicate. Errors: `qualification_required`
+and `prospect_not_qualified` (409), `qualification_not_found` and
+`prospect_not_found` (404).
+
+**Search.** `GET /prospects` takes these optional parameters:
+
+- `q`: text in name, domain, or description.
+- `domain`
+- `min_score`, `max_score`
+- `saved_after`, `saved_before`: ISO 8601 with a timezone.
+- `sort`: `saved_at_desc` (default), `saved_at_asc`, `score_desc`, or
+  `name_asc`.
+- `limit` (1–100), `offset`.
+
+Unknown parameters are rejected with 422.
+
 ## 6. Start the development server
 
 ```powershell
@@ -371,13 +435,19 @@ app/
   models/            SQLAlchemy models and declarative base
     company_candidate.py  discovered company candidates
     company_research.py   website research attempts per candidate
+    company_qualification.py  append-only qualification runs
+    saved_prospect.py     saved prospects (one per candidate)
   schemas/           Pydantic request/response schemas
-  routers/           thin HTTP routes (health, discovery, research)
+  routers/           thin HTTP routes (health, discovery, research,
+                     qualification, prospects)
   services/          business logic
     discovery.py          search -> normalize -> dedupe -> persist
     discovery_urls.py     URL/domain normalization
     research.py           fetch stored website -> persist attempt -> prune
     enrichment.py         read-only discovery + research projection
+    qualification_rules.py  pure, versioned scoring rules
+    qualification.py      run + persist qualification, history
+    prospects.py          eligibility-gated save, search, retrieval
     providers/            SearchProvider (tavily/fake) and WebsiteFetcher
                           (httpx/fake) adapters, SSRF checks, HTML text
 alembic/             migration environment (URL from app settings)

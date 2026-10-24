@@ -62,14 +62,17 @@ def db_session_factory(db_engine: Engine) -> sessionmaker[Session]:
 
 @pytest.fixture
 def clean_database(db_engine: Engine) -> None:
-    """Truncate candidates and research before every test that uses the database.
+    """Truncate all application tables before every test that uses the database.
 
     Applied by both session-based and API-based fixtures so each test starts
     from empty tables regardless of how it obtains its session.
     """
     with db_engine.begin() as connection:
         connection.execute(
-            text("TRUNCATE company_research, company_candidates RESTART IDENTITY")
+            text(
+                "TRUNCATE saved_prospects, company_qualifications, company_research, "
+                "company_candidates RESTART IDENTITY"
+            )
         )
 
 
@@ -78,7 +81,7 @@ def db_session(
     db_session_factory: sessionmaker[Session],
     clean_database: None,
 ) -> Iterator[Session]:
-    """A session against empty ``company_candidates``/``company_research`` tables."""
+    """A session against empty application tables."""
     session = db_session_factory()
     try:
         yield session

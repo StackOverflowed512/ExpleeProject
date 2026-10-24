@@ -14,7 +14,7 @@ from app.config import Settings, get_settings
 from app.database import build_engine, build_session_factory
 from app.errors import register_exception_handlers
 from app.logging_config import configure_logging
-from app.routers import discovery, health, research
+from app.routers import discovery, health, prospects, qualification, research
 from app.services.providers import build_search_provider, build_website_fetcher
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,8 @@ def create_app(
     app.include_router(health.router)
     app.include_router(discovery.router)
     app.include_router(research.router)
+    app.include_router(qualification.router)
+    app.include_router(prospects.router)
 
     @app.get(
         "/",
