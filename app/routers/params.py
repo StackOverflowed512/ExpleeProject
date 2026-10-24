@@ -16,3 +16,11 @@ ProspectId = Annotated[
     int,
     Path(ge=1, le=MAX_DB_ID, description="Saved prospect ID."),
 ]
+CampaignId = Annotated[
+    int,
+    Path(ge=1, le=MAX_DB_ID, description="Campaign ID."),
+]
+DraftId = Annotated[
+    int,
+    Path(ge=1, le=MAX_DB_ID, description="Outreach draft ID."),
+]

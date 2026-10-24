@@ -4,7 +4,8 @@ Settings are read from environment variables first, then from the project
 root ``.env`` file, then from the defaults defined below. Environment
 variable names are case-insensitive and mirror the field names
 (``APP_ENV``, ``DATABASE_URL``, ``LOG_LEVEL``, ``SEARCH_PROVIDER``,
-``TAVILY_API_KEY``, ``WEBSITE_FETCHER``, ``RESEARCH_*``).
+``TAVILY_API_KEY``, ``WEBSITE_FETCHER``, ``RESEARCH_*``, ``DRAFT_GENERATOR``,
+``MISTRAL_*``).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ AppEnvironment = Literal["development", "testing", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 SearchProviderName = Literal["fake", "tavily"]
 WebsiteFetcherName = Literal["fake", "httpx"]
+DraftGeneratorName = Literal["fake", "mistral"]
 
 DEFAULT_DATABASE_URL: Final = (
     "postgresql+psycopg://postgres:postgres@localhost:5432/explee"
@@ -138,6 +140,43 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Outreach draft generation ----------------------------------------
+    draft_generator: DraftGeneratorName = Field(
+        default="mistral",
+        description=(
+            "Draft generator for outreach. 'mistral' calls the Mistral chat "
+            "completions API and requires MISTRAL_API_KEY; 'fake' produces "
+            "deterministic drafts without network access."
+        ),
+    )
+    mistral_api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Mistral API key. Optional at startup so the app and tests run "
+            "without credentials; draft generation raises "
+            "provider_not_configured when Mistral is selected without a key."
+        ),
+    )
+    mistral_model: str = Field(
+        default="mistral-small-latest",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description="Mistral model identifier used for draft generation.",
+    )
+    mistral_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=120,
+        description="Timeout for a single Mistral HTTP request.",
+    )
+    mistral_max_retries: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        description="Retries for transient Mistral failures (429, 5xx, timeouts).",
+    )
+
     @model_validator(mode="after")
     def _check_research_timeouts(self) -> "Settings":
         if self.research_max_fetch_seconds < self.research_connect_timeout_seconds:
@@ -157,9 +196,9 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
 
-    @field_validator("tavily_api_key", mode="before")
+    @field_validator("tavily_api_key", "mistral_api_key", mode="before")
     @classmethod
-    def _normalize_tavily_api_key(cls, value: object) -> object:
+    def _normalize_api_keys(cls, value: object) -> object:
         if isinstance(value, SecretStr):
             value = value.get_secret_value()
         if isinstance(value, str):

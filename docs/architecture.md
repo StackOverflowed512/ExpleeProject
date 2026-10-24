@@ -9,7 +9,7 @@ can later be extracted or replaced without touching business logic.
 ```
 HTTP (app/routers)          thin: parse, validate, delegate, serialize
   └─ Services (app/services) business rules; framework-agnostic where practical
-       └─ Providers          replaceable adapters (web search, enrichment, Mistral, email)
+       └─ Providers          replaceable adapters (web search, website fetcher, Mistral drafts; email in P5)
             └─ Models (app/models) SQLAlchemy 2.x ORM against PostgreSQL
 Infrastructure              app/config.py, app/database.py, app/errors.py, app/logging_config.py
 ```
@@ -475,22 +475,198 @@ qualification.
 
 ### Outreach Agent
 
-1. Campaigns select saved prospects.
-2. Draft generation calls a `DraftGenerator` protocol; the Mistral adapter
-   implements it, and prompts are versioned code, not database state.
-3. **Approval gate** — drafts are stored in `pending` state. The backend
-   refuses to send anything that was not explicitly approved by a recorded
-   human action. This is enforced in the service layer, not only in the UI.
-4. Sending goes through an `EmailProvider` protocol. Sending is idempotent
-   per draft and audited (attempt, result, timestamp).
+1. **Campaigns** (P4) select saved prospects only.
+2. **Draft generation** (P4) calls the `DraftGenerator` protocol; the Mistral
+   adapter implements it, and prompts are versioned code, not database
+   state. Drafts are stored in `pending` state.
+3. **Approval gate** (P5, not implemented): the backend will refuse to send
+   anything that was not explicitly approved by a recorded human action,
+   enforced in the service layer, not only in the UI.
+4. **Sending** (P5, not implemented) will go through an `EmailProvider`
+   protocol, idempotent per draft and audited (attempt, result, timestamp).
+
+### Campaigns and drafts (P4)
+
+**Workflow.** Saved prospects → `POST /campaigns` → `POST
+/campaigns/{id}/drafts` → `pending` drafts for later review. Nothing in
+Phase 4 sends email: there is no email transport, approval endpoint, or
+state transition. A test also asserts that no module in `app/` imports an
+email library.
+
+**Modules.**
+
+| Module | Responsibility |
+| --- | --- |
+| `app/services/providers/drafts.py` | `DraftGenerator` protocol, `DraftPrompt`, `GeneratedDraft`, error types, and `parse_draft_output` (the strict validation shared by all adapters). |
+| `app/services/providers/mistral.py` | Mistral chat-completions adapter (HTTPX, no SDK). |
+| `app/services/providers/drafts_fake.py` | Deterministic fake for tests and credential-free runs. |
+| `app/services/outreach_prompt.py` | Versioned prompt `outreach-draft/v1`: pure, deterministic construction and hashing. |
+| `app/services/campaigns.py` | Campaign creation from saved prospects, listing, and detail. |
+| `app/services/drafts.py` | Generation flow, persistence, repeat/regenerate rules, listing. |
+| `app/routers/campaigns.py`, `app/routers/drafts.py` | Thin routes. |
+| `app/schemas/campaigns.py`, `app/schemas/drafts.py`, `app/schemas/text_rules.py` | Request/response schemas and the shared email/placeholder rules. |
+
+**Campaigns.** A campaign stores `name`, an optional `description`, and its
+configuration: `product`, `value_proposition`, `target_audience`,
+`call_to_action`, `tone` (`professional`, `friendly`, `concise`, or
+`formal`), and optional `sender_name` and `sender_company`.
+
+- Text fields are stripped, and control characters are rejected.
+- Fields that feed the prompt may not contain email addresses or template
+  placeholders such as `[Name]`, because drafts containing them are
+  rejected.
+- `prospect_ids` holds 1–50 IDs with no duplicates. Every ID must be an
+  existing **saved prospect** (422 `invalid_prospect_ids`, with
+  `details.missing_prospect_ids`), so arbitrary candidates cannot enter a
+  campaign.
+- The campaign and its links are written in one transaction.
+
+`campaign_prospects` has a composite primary key `(campaign_id,
+saved_prospect_id)` (no duplicate links), a unique `position` per campaign
+that preserves selection order, and `ON DELETE CASCADE` foreign keys.
+`GET /campaigns` lists campaigns newest first, ties broken by ID (`limit`
+1–100, `offset` 0–10000, `total`). `GET /campaigns/{id}` returns the
+configuration and prospects in position order, each with its
+qualification summary.
+
+**Draft generator.** `DRAFT_GENERATOR=mistral` (default) or `fake`.
+
+- `MISTRAL_API_KEY` is optional at startup. With Mistral selected and no
+  key, generation raises `provider_not_configured` (503) before any
+  request.
+- The adapter posts to `https://api.mistral.ai/v1/chat/completions`. It
+  sends a system and a user message, the prompt version's `temperature`
+  and `max_tokens`, a fixed `random_seed`, and JSON mode
+  (`response_format: json_object`).
+- Timeouts are `MISTRAL_TIMEOUT_SECONDS`. 429, 5xx, timeouts and connection
+  errors are retried up to `MISTRAL_MAX_RETRIES` times with bounded
+  backoff and a `Retry-After` capped at 5 seconds. 401/403 and other 4xx
+  responses are not retried.
+- A `finish_reason` other than `stop` (for example a truncated answer) is
+  rejected.
+- The key, headers, prompts, and response bodies are never logged.
+  Provider errors carry fixed, safe messages.
+
+| Code | HTTP | Cause |
+| --- | --- | --- |
+| `provider_not_configured` | 503 | Mistral selected without a key |
+| `provider_authentication_failed` | 502 | 401/403 |
+| `provider_rate_limited` | 503 | 429 after retries |
+| `provider_timeout` | 504 | timeout after retries |
+| `provider_unavailable` | 502 | 5xx after retries, other 4xx, unreachable |
+| `provider_invalid_output` | 502 | non-JSON, wrong shape, truncated, empty, too short/long, contains an email address or placeholder |
+
+**Prompt `outreach-draft/v1`.** `build_prompt(CampaignBrief,
+ProspectFacts)` is a pure function, so equal inputs give an identical
+prompt and `prompt_sha256`.
+
+- **Campaign fields** are sender-controlled.
+- **Prospect facts** are treated as untrusted: the company name (a search
+  title), domain, website URL, search snippet, the latest usable research
+  page title and opening text, the qualification's matched terms, and up
+  to three excerpts of counted website-level evidence. This text is
+  NFKC-normalized, stripped of control and zero-width characters,
+  whitespace-collapsed, and truncated to fixed limits. Absent fields are
+  omitted rather than guessed.
+- **Data block:** the prospect data is JSON with `<` and `>` escaped, inside
+  one `<prospect_data>` block that the system prompt declares untrusted.
+  Untrusted text can therefore neither close the block nor pose as
+  instructions.
+- **System rules:** use only the provided facts. Never invent people,
+  titles, contact details, URLs, numbers, customers, integrations,
+  partnerships, funding, or past contact. Greet generically, prefer the
+  domain when the name looks like a headline, write a generic message when
+  data is thin, add no placeholders or email addresses, match the tone,
+  and answer with JSON `{"subject", "body"}` only.
+- **Validation:** the output is checked independently of the model by
+  `parse_draft_output`, which requires a subject of 1–200 characters, a
+  body of 40–5000 characters, no email address, and no placeholder.
+
+Any change to wording, fields, limits, or serialization must bump
+`PROMPT_VERSION`.
+
+**Generation flow** (`POST /campaigns/{id}/drafts`, body `{
+"saved_prospect_ids"?: [...], "regenerate"?: false }`):
+
+1. A short read-only session loads the campaign, its prospects (in campaign
+   order, optionally a subset, which must belong to the campaign, else 422
+   `prospect_not_in_campaign`), existing drafts, and the evidence for each
+   prospect, and builds the prompts. The session then closes.
+2. The generator is called with **no** database session open.
+3. Each validated draft is inserted in its own narrow transaction, with
+   `state='pending'`. A provider or validation failure therefore never
+   leaves a partial draft; drafts saved earlier in the same request remain.
+   A failure stops the request with the provider's error envelope, where
+   `details.failed_saved_prospect_id` and `details.generated_draft_ids`
+   say what happened.
+4. At most 10 drafts are generated per request (`batch_limit`), and
+   `remaining` counts the targeted prospects still waiting.
+
+**Repeat behaviour.** Without `regenerate`, a prospect that already has a
+draft is skipped and reported as `existing`, so retries never create
+duplicates and continue where a failed request stopped. With `regenerate`,
+a new `revision` is added and earlier drafts are never overwritten. A
+unique constraint on `(campaign_id, saved_prospect_id, revision)` plus
+`ON CONFLICT DO NOTHING` resolves concurrent requests:
+
+- **Without `regenerate`:** concurrent requests resolve to one row. The
+  loser reports the winner's persisted draft as `existing`.
+- **With `regenerate`:** each request asked for a new revision, so a
+  request that loses the race for revision *n* moves on to *n + 1*.
+  Every request gets its own revision and no generated draft is
+  discarded. After 5 consecutive collisions it fails safely with
+  `draft_persistence_failed`.
+
+Both cases are tested with two threads racing against PostgreSQL
+(`tests/integration/test_outreach_concurrency.py`).
+
+**Draft model (`outreach_drafts`).**
+
+- `id`, `campaign_id`, `saved_prospect_id` (composite FK to
+  `campaign_prospects`, `ON DELETE CASCADE`, so a draft's prospect always
+  belongs to its campaign), and `revision` (≥ 1).
+- `state`: a check constraint allows only `'pending'` in Phase 4.
+- `subject` and `body` (non-blank checks).
+- Audit trail: `prompt_version`, `prompt_sha256` (hash of the exact
+  messages and parameters sent), `provider`, `model` (as reported by the
+  provider), and `generation_metadata` (JSONB: response ID, finish reason,
+  token usage; never the raw body).
+- `provenance` (JSONB): candidate ID and discovery source URL, saved
+  prospect, qualification ID and rule version, research ID, URL and fetch
+  time, and the evidence sources quoted.
+- `qualification_id` and `research_id` (FKs, `ON DELETE SET NULL`), plus
+  `generated_at`, `created_at` and `updated_at`.
+
+`GET /campaigns/{id}/drafts` lists drafts in campaign order, then revision,
+ties by ID (`limit`/`offset`, optional `saved_prospect_id`).
+`GET /drafts/{id}` returns one draft.
+
+**Error codes.** `campaign_not_found`, `draft_not_found` (404);
+`invalid_prospect_ids`, `prospect_not_in_campaign`, `validation_error`
+(422); the provider codes above; `campaign_persistence_failed`,
+`draft_persistence_failed` (500).
+
+**Migration note.** `0005_campaigns_drafts` names its CHECK constraints with
+`op.f()`, so they match the models (for example
+`ck_outreach_drafts_state_valid`). Migrations `0002`–`0004` had created
+their CHECK constraints with doubled names (for example
+`ck_company_qualifications_ck_company_qualifications_score_range`),
+because Alembic applied the naming convention a second time.
+`0006_check_constraint_names` renames them to the model names. A
+migration test now asserts that every table's CHECK names at head match
+the names derived from the models, which `alembic check` cannot do.
+New migrations that name CHECK constraints inside `op.create_table` must
+wrap the final name in `op.f()`.
 
 ### Mistral
 
-Accessed only through an `AIProvider` adapter in `app/services/ai/` (or a
-dedicated provider package when Phase 1 lands). The app depends on the
-adapter's protocol, never on a vendor SDK at the call site. API keys come
-from settings, are never logged, and the test suite supplies a fake adapter
-so no credentials are required to run tests.
+Accessed only through the `DraftGenerator` protocol
+(`app/services/providers/drafts.py`), implemented by
+`app/services/providers/mistral.py` over HTTPX. No vendor SDK is used.
+Business logic never reads Mistral payloads. The key comes from settings
+(`MISTRAL_API_KEY`) and is never logged. The suite uses the fake generator
+or HTTPX mock transports, so no credentials are required and no test calls
+the real API.
 
 ### Database
 
