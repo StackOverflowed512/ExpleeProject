@@ -30,3 +30,7 @@ def configure_logging(level: str) -> None:
         root.addHandler(handler)
 
     root.setLevel(level.upper())
+    # HTTPX logs every request URL (query string included) at INFO. Research
+    # fetches third-party URLs, so keep those lines out of application logs.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(max(logging.WARNING, root.level))

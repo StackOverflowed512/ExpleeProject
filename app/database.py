@@ -39,6 +39,15 @@ def build_session_factory(engine: Engine) -> sessionmaker[Session]:
     )
 
 
+def get_session_factory(request: Request) -> sessionmaker[Session]:
+    """FastAPI dependency returning the application's session factory.
+
+    For services that open their own short-lived sessions, such as research,
+    which must not hold a session or transaction across a network call.
+    """
+    return request.app.state.session_factory
+
+
 def get_session(request: Request) -> Iterator[Session]:
     """FastAPI dependency that yields a request-scoped database session.
 

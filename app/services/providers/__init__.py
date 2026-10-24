@@ -1,7 +1,9 @@
-"""Search provider package.
+"""External provider package.
 
 Discovery depends on :class:`app.services.providers.search.SearchProvider`;
-concrete adapters are selected in :func:`build_search_provider`.
+concrete adapters are selected in :func:`build_search_provider`. Research
+depends on :class:`app.services.providers.website.WebsiteFetcher`, selected
+in :func:`build_website_fetcher`.
 """
 
 from __future__ import annotations
@@ -12,12 +14,19 @@ from app.config import Settings
 from app.services.providers.fake import FakeSearchProvider
 from app.services.providers.search import SearchProvider
 from app.services.providers.tavily import TavilySearchProvider
+from app.services.providers.website import WebsiteFetcher
+from app.services.providers.website_fake import FakeWebsiteFetcher
+from app.services.providers.website_httpx import HttpxWebsiteFetcher
 
 __all__ = [
     "FakeSearchProvider",
+    "FakeWebsiteFetcher",
+    "HttpxWebsiteFetcher",
     "SearchProvider",
     "TavilySearchProvider",
+    "WebsiteFetcher",
     "build_search_provider",
+    "build_website_fetcher",
 ]
 
 logger = logging.getLogger(__name__)
@@ -47,3 +56,25 @@ def build_search_provider(settings: Settings) -> SearchProvider:
         )
 
     raise ValueError(f"Unsupported search provider: {settings.search_provider!r}")
+
+
+def build_website_fetcher(settings: Settings) -> WebsiteFetcher:
+    """Build the fetcher selected by ``WEBSITE_FETCHER``.
+
+    Neither adapter needs credentials. Research never uses a search provider
+    to fetch pages, so it consumes no search API quota.
+    """
+    if settings.website_fetcher == "fake":
+        return FakeWebsiteFetcher()
+
+    if settings.website_fetcher == "httpx":
+        return HttpxWebsiteFetcher(
+            connect_timeout_seconds=settings.research_connect_timeout_seconds,
+            read_timeout_seconds=settings.research_read_timeout_seconds,
+            max_fetch_seconds=settings.research_max_fetch_seconds,
+            max_response_bytes=settings.research_max_response_bytes,
+            max_redirects=settings.research_max_redirects,
+            max_text_chars=settings.research_max_text_chars,
+        )
+
+    raise ValueError(f"Unsupported website fetcher: {settings.website_fetcher!r}")

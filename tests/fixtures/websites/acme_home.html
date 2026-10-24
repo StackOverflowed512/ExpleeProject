@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<!-- Synthetic fixture modelled on a typical company homepage. Not a real site. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>  Acme Widgets &mdash; Industrial
+    Widgets for Teams </title>
+  <meta name="description" content="Meta description is not visible text.">
+  <link rel="stylesheet" href="/static/site.css">
+  <style>.hero { color: red; } body::after { content: "STYLE-LEAK"; }</style>
+  <script>window.tracking = "SCRIPT-LEAK";</script>
+  <script type="application/ld+json">{"@type": "Organization", "name": "JSONLD-LEAK"}</script>
+</head>
+<body>
+  <noscript>NOSCRIPT-LEAK: please enable JavaScript</noscript>
+  <header>
+    <nav><a href="/">Home</a> <a href="/about">About</a> <a href="/careers">Careers</a></nav>
+  </header>
+  <main>
+    <h1>Widgets&nbsp;that   ship</h1>
+    <p>Acme builds industrial
+       widgets for distributed teams.</p>
+    <svg width="10" height="10"><text>SVG-LEAK</text></svg>
+    <template><p>TEMPLATE-LEAK</p></template>
+    <iframe src="https://ads.example.net/frame">IFRAME-LEAK</iframe>
+    <form><input value="INPUT-LEAK"><button>BUTTON-LEAK</button></form>
+    <section>
+      <h2>Customers</h2>
+      <ul><li>Logistics</li><li>Manufacturing</li></ul>
+    </section>
+  </main>
+  <footer>Acme Widgets GmbH, Berlin</footer>
+  <script>document.write("INLINE-SCRIPT-LEAK")</script>
+</body>
+</html>

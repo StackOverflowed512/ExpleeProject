@@ -136,12 +136,99 @@ documentation. No API, schema, or migration changes.
 URLs; enrichment service combining discovery and research; failure and
 partial-data handling.
 
+**Implementation notes (2026-10-24)**
+
+- Fetcher contract: `app/services/providers/website.py` (`WebsiteFetcher`,
+  `FetchResult`, outcomes, safe failure categories). Adapters
+  `website_httpx.py` (real) and `website_fake.py` (tests), selected by
+  `WEBSITE_FETCHER` (`httpx` default, `fake`). No credentials needed.
+- Tavily is not used: research fetches `CompanyCandidate.website_url`
+  directly with HTTPX and consumes no search credits.
+- SSRF: syntax validation, every-address-public resolution checks, DNS
+  pinning (connect to the validated IP; hostname kept for `Host` and TLS
+  SNI/cert verification), manual redirect revalidation, ports 80/443 only,
+  proxies ignored, no keep-alive. Residual limitations are in
+  `docs/architecture.md`.
+- Extraction: BeautifulSoup `html.parser` (`beautifulsoup4` added to
+  `pyproject.toml`). Scripts, styles, templates, SVG, frames, form controls,
+  and comments are removed; text is whitespace-normalized and capped.
+- Persistence: `company_research` (migration `0002_company_research`), one
+  row per attempt. History is pruned to the 5 most recent attempts plus the
+  latest usable record per candidate. Discovery provenance is never
+  modified.
+- Session lifecycle: research opens its own short sessions from the
+  session factory, and no session is held across the outbound fetch.
+- Freshness: usable research younger than `RESEARCH_FRESHNESS_HOURS`
+  (default 24) is reused unless `{"refresh": true}` is sent.
+- API: `POST /companies/{id}/research`, `GET /companies/{id}/research`,
+  `GET /companies/{id}/enrichment`. Statuses: `available`, `partial`,
+  `unavailable`, `not_researched`. Errors: `candidate_not_found` (404),
+  `candidate_website_missing` (409), `validation_error` (422),
+  `research_persistence_failed` (500).
+- HTTPX request logging (which contains full URLs) is raised to WARNING in
+  `app/logging_config.py`; research logs only candidate ID, host, and
+  outcome.
+
 **Exit criteria**
 
-- Extraction results store their provenance (URL, fetched timestamp).
-- Fetch failures degrade gracefully and are visible in logs.
-- Enrichment is idempotent for the same prospect and input.
-- Tests use recorded fixtures, never live websites.
+- [x] Extraction results store their provenance: `requested_url`,
+      `final_url`, `fetched_at`, and `fetcher` on every attempt.
+- [x] Fetch failures degrade gracefully. They are recorded as `failed` with
+      a safe category, never erase earlier usable research, and are logged
+      at WARNING with candidate ID and host.
+- [x] Enrichment is idempotent: a pure projection of stored rows with no
+      fetches or writes, covered by unit and DB tests.
+- [x] Tests use a recorded HTML fixture (`tests/fixtures/websites/`), HTTPX
+      mock transports, injected resolvers, and the fake fetcher. No test
+      contacts a live website or DNS server.
+- [x] Migration `0002_company_research` upgrades a Phase 1 database with
+      data. Verified 2026-10-24 on PostgreSQL 17: the automated test
+      upgrades `explee_test` from `0001` with a candidate row, then
+      downgrades and re-upgrades. `alembic upgrade head` applied
+      `0001 -> 0002` to the configured `explee` database, and
+      `alembic check` reported "No new upgrade operations detected."
+- [x] Full suite on 2026-10-24 (Python 3.14.8, PostgreSQL 17,
+      `TEST_DATABASE_URL` → `explee_test`): 411 passed (after review
+      follow-ups). Without a test database: 336 passed, 75 skipped. The only warning is the existing
+      third-party Starlette/httpx deprecation from FastAPI's
+      `testclient.py`.
+- [x] Phase 0, Phase 1, and Phase 1.1 regression tests pass unchanged,
+      apart from fixture updates for the new table: truncate/drop
+      `company_research`, and the head revision is now `0002`.
+- [x] No Tavily calls, Mistral, qualification, outreach, UI, Docker, or
+      background workers added.
+
+**Manual checks (not automated)**
+
+- One-off live fetches with the real adapter on 2026-10-24:
+  `https://example.com/`, `http://example.com`, and
+  `https://www.python.org/` succeeded through the pinned-IP path. Wrong-host,
+  self-signed, and expired certificates (`*.badssl.com`) were rejected.
+  `http://127.0.0.1/` and `http://localtest.me/` (resolves to 127.0.0.1)
+  were blocked. This check found and fixed a defect: the fetcher used only
+  the first resolved address, so IPv6-first hosts timed out on an
+  IPv4-only network. It now tries validated addresses IPv4-first, with
+  connect-failure fallback.
+
+**Not verified**
+
+- Behaviour against a real DNS-rebinding server was not exercised. The
+  mitigation is covered by unit tests with a rebinding resolver stub and by
+  the design (single resolution per hop, connect to the validated IP).
+- DNS timeout behaviour is covered by unit tests with a stalled resolver
+  stub, not against a real slow DNS server.
+
+**Review follow-ups (2026-10-24, PR review)**
+
+- Session lifecycle: `run_research` now takes a session factory and uses a
+  read-only session, a fetch with no session open, and one narrow write
+  transaction. It no longer commits a caller's session. Tests assert that no
+  pooled connection is checked out during the fetch and that a caller's
+  pending changes are never committed.
+- DNS bound: resolution is limited to `min(connect timeout, remaining
+  budget)` on a bounded worker pool, so the total fetch budget now covers
+  name resolution. A stuck OS lookup still occupies its worker until it
+  returns (see `docs/architecture.md`).
 
 ## P3 — Explorer: qualification and saved prospects
 

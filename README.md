@@ -7,11 +7,11 @@ Personal AI-powered sales intelligence and outreach platform. Two modules:
 - **Outreach Agent** — build campaigns from saved prospects, generate drafts,
   obtain explicit human approval, and send through a configurable provider.
 
-This repository currently contains **Phases 0 and 1**, plus the **P1.1 search
-provider swap**: application skeleton, configuration, health endpoint, error
-contract, database wiring, migrations, and Explorer company discovery backed
-by Tavily Search. Website research, qualification, and outreach features are
-not implemented yet.
+This repository currently contains **Phases 0, 1, 1.1, and 2**: application
+skeleton, configuration, health endpoint, error contract, database wiring,
+migrations, Explorer company discovery backed by Tavily Search, and website
+research and enrichment of discovered candidates. Qualification, saved
+prospects, and outreach features are not implemented yet.
 
 ## Prerequisites
 
@@ -117,7 +117,8 @@ application only accepts the psycopg 3 driver, so the scheme must be
    password is never printed.
 
 If PostgreSQL is unavailable, the app still starts and `GET /health` works;
-discovery needs it because it persists candidates.
+discovery and research need it because they persist candidates and research
+attempts.
 
 ## 4b. Configure the Explorer search provider
 
@@ -181,12 +182,21 @@ alembic current
 ```
 
 Alembic reads `DATABASE_URL` from the same settings as the application.
-P1 ships the first revision (`0001_company_candidates`), which creates the
-`company_candidates` table and its partial unique indexes. Verify the
-schema afterwards:
+Revisions:
+
+| Revision | Phase | Creates |
+| --- | --- | --- |
+| `0001_company_candidates` | P1 | `company_candidates` and its partial unique indexes |
+| `0002_company_research` | P2 | `company_research` (FK to candidates, `ON DELETE CASCADE`) |
+
+An existing Phase 1 database upgrades in place with `alembic upgrade head`.
+Existing candidates are untouched. To roll back only Phase 2, run
+`alembic downgrade 0001_company_candidates`, which drops `company_research`.
+Verify the schema afterwards:
 
 ```powershell
 psql -U postgres -h localhost -d explee -c "\d company_candidates"
+psql -U postgres -h localhost -d explee -c "\d company_research"
 ```
 
 Useful commands:
@@ -225,6 +235,60 @@ persisted candidates with `name`, `website_url`, `domain`, `description`,
 search does not create duplicates; it reports `created: 0` and fills only
 previously missing fields.
 
+## 5c. Research and enrich a candidate
+
+Research fetches the website **already stored on a discovered candidate**.
+It uses direct HTTP (HTTPX), not Tavily, so it consumes no search credits
+and needs no API key. No endpoint accepts a URL from the caller.
+
+```powershell
+# Request research (reuses fresh research; add -Body '{"refresh": true}' to force a fetch)
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/companies/1/research -ContentType "application/json" -Body '{}' | ConvertTo-Json -Depth 5
+
+# Stored research: latest usable record plus retained attempt history
+Invoke-RestMethod http://127.0.0.1:8000/companies/1/research | ConvertTo-Json -Depth 5
+
+# Discovery data combined with the latest usable research
+Invoke-RestMethod http://127.0.0.1:8000/companies/1/enrichment | ConvertTo-Json -Depth 5
+```
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `POST /companies/{id}/research` | Body `{"refresh": false}` (optional; unknown fields → 422). Returns `status`, `reused`, `attempt`, `latest_usable`. |
+| `GET /companies/{id}/research` | Returns `status`, `latest_usable` (with text), `attempts` (metadata only, newest first). Never fetches. |
+| `GET /companies/{id}/enrichment` | Returns discovery fields and provenance, `research_status`, `website`, `last_attempt`. Read-only and deterministic. |
+
+`status` is `available`, `partial` (size limit hit), `unavailable` (attempted,
+nothing usable), or `not_researched`. Each attempt's `outcome` is `success`,
+`partial`, `empty`, or `failed`. A failed fetch is recorded with a safe
+`failure_category` (for example `timeout`, `http_error`,
+`blocked_destination`) and returns HTTP 200; earlier usable research stays
+in `latest_usable`. Errors use the shared envelope: `candidate_not_found`
+(404), `candidate_website_missing` (409), `validation_error` (422),
+`research_persistence_failed` (500).
+
+Settings (all optional; safe defaults, see `.env.example`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WEBSITE_FETCHER` | `httpx` | `httpx` (real) or `fake` (no network) |
+| `RESEARCH_CONNECT_TIMEOUT_SECONDS` | `5` | TCP/TLS connect timeout |
+| `RESEARCH_READ_TIMEOUT_SECONDS` | `10` | Read/write timeout |
+| `RESEARCH_MAX_FETCH_SECONDS` | `20` | Total budget per fetch, redirects included |
+| `RESEARCH_MAX_RESPONSE_BYTES` | `2000000` | Body bytes read; more → `partial` |
+| `RESEARCH_MAX_REDIRECTS` | `5` | Redirects followed, each revalidated |
+| `RESEARCH_MAX_TEXT_CHARS` | `50000` | Stored text cap |
+| `RESEARCH_FRESHNESS_HOURS` | `24` | Reuse window; `0` disables reuse |
+
+**Safety.** Fetches go only to public addresses on ports 80/443. URLs with
+credentials, non-HTTP schemes, alternate numeric IP forms, and
+local/internal names are rejected. Every resolved address must be public.
+The connection is pinned to the validated IP (mitigating DNS rebinding),
+and every redirect is revalidated. Only HTML is parsed, and page text is
+stored as third-party content, not verified facts. Each candidate keeps its
+five most recent attempts plus the latest usable one. Full details and
+residual limitations are in `docs/architecture.md`.
+
 ## 6. Start the development server
 
 ```powershell
@@ -262,19 +326,22 @@ pytest tests/integration
 ```
 
 Tests are deterministic, use no network, no live database, and no Tavily or
-Mistral credentials. Tavily is exercised only through HTTPX mock transports;
-set `SEARCH_PROVIDER=fake` or inject `FakeSearchProvider` for credential-free
-runs. PostgreSQL-backed integration tests (discovery persistence, API
-persistence, migrations) run only when `TEST_DATABASE_URL` points at a
-**disposable** database; otherwise they are skipped:
+Mistral credentials. Tavily and the website fetcher are exercised only
+through HTTPX mock transports, injected DNS resolvers, and an HTML fixture in
+`tests/fixtures/websites/`. Test settings use `SEARCH_PROVIDER=fake` and
+`WEBSITE_FETCHER=fake`. PostgreSQL-backed integration tests (discovery and
+research persistence, API persistence, migrations) run only when
+`TEST_DATABASE_URL` points at a **disposable** database; otherwise they are
+skipped:
 
 ```powershell
 $env:TEST_DATABASE_URL = "postgresql+psycopg://explee:change-me@localhost:5432/explee_test"
 pytest -q
 ```
 
-The migration test downgrades that database to `base` and upgrades it back
-to `head`, so never point `TEST_DATABASE_URL` at real data. To create the
+The migration tests drop the application tables in that database, upgrade
+to `head`, and also upgrade from the Phase 1 revision with data present, so
+never point `TEST_DATABASE_URL` at real data. To create the
 test database in pgAdmin: **Databases → Create → Database**, name
 `explee_test`, owner the same role.
 
@@ -303,17 +370,22 @@ app/
   logging_config.py  logging setup
   models/            SQLAlchemy models and declarative base
     company_candidate.py  discovered company candidates
+    company_research.py   website research attempts per candidate
   schemas/           Pydantic request/response schemas
-  routers/           thin HTTP routes (health, discovery)
+  routers/           thin HTTP routes (health, discovery, research)
   services/          business logic
     discovery.py          search -> normalize -> dedupe -> persist
     discovery_urls.py     URL/domain normalization
-    providers/            SearchProvider protocol + tavily/fake adapters
+    research.py           fetch stored website -> persist attempt -> prune
+    enrichment.py         read-only discovery + research projection
+    providers/            SearchProvider (tavily/fake) and WebsiteFetcher
+                          (httpx/fake) adapters, SSRF checks, HTML text
 alembic/             migration environment (URL from app settings)
 docs/                architecture and phased plan
 scripts/             operational helpers (check_db)
 tests/unit/          fast, isolated tests
 tests/integration/   ASGI app tests; DB tests when TEST_DATABASE_URL is set
+tests/fixtures/      recorded HTML fixtures (no live websites in tests)
 ```
 
 See `docs/architecture.md` for boundaries and `docs/implementation-plan.md`
