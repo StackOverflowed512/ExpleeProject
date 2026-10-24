@@ -60,17 +60,22 @@ never read the developer's `.env`.
    the adapter when a search is requested, so health checks and unrelated
    tests run without credentials. A missing key raises
    `provider_not_configured`; selection never falls back silently.
-2. **Research** — fetch and extract public website content through a
-   `WebsiteFetcher` protocol; store extracted facts with their source URL.
-   Not implemented yet.
-3. **Enrichment** — combine discovery and research into a prospect record.
-   Not implemented yet.
+2. **Research** — implemented in P2. A `WebsiteFetcher` protocol
+   (`app/services/providers/website.py`) fetches the website URL stored on
+   a persisted candidate and returns a normalized `FetchResult`. Adapters:
+   `httpx` (real HTTP with SSRF protections) and `fake` (deterministic, no
+   network), selected by `WEBSITE_FETCHER`. Research does not use Tavily
+   or any search API. Every attempt is stored in `company_research` with
+   its provenance.
+3. **Enrichment** — implemented in P2 as a read-only projection that
+   combines a candidate's discovery fields with its latest usable research.
+   No facts are inferred from page text.
 4. **Qualification** — deterministic, rule-based scoring in a later phase;
    Mistral-assisted qualification after that, with the score and rationale
    persisted so a decision can be audited.
 5. **Persistence** — `company_candidates` stores discovered companies
    through the discovery service, which enforces deduplication and source
-   provenance.
+   provenance. `company_research` stores research attempts per candidate.
 
 Providers must never invent data: a field is either sourced (with a URL or
 provider name recorded) or absent.
@@ -102,6 +107,168 @@ provider name recorded) or absent.
   and a bounded `Retry-After`. Authentication failures, other 4xx responses,
   and malformed payloads are not retried. The adapter requests
   `search_depth=basic` to keep cost and latency predictable.
+
+### Research and enrichment details (P2)
+
+**Workflow.** `POST /companies/{id}/research` → load the candidate → read
+its stored `website_url` → syntax-validate it (no network) → if fresh usable
+research exists and `refresh` is false, return it → otherwise call the
+injected `WebsiteFetcher` → persist the attempt → prune history → return the
+attempt and the latest usable research. No endpoint accepts a URL; the
+request body is `{"refresh": bool}` with unknown fields forbidden.
+
+**Modules.**
+
+| Module | Responsibility |
+| --- | --- |
+| `app/services/providers/website.py` | `WebsiteFetcher` protocol, `FetchResult`, `FetchOutcome`, `FetchFailure`. |
+| `app/services/providers/url_safety.py` | URL syntax checks, non-public address detection, resolution checks. |
+| `app/services/providers/website_httpx.py` | Real fetcher: pinning, redirects, limits, failure mapping. |
+| `app/services/providers/html_text.py` | BeautifulSoup (`html.parser`) title and visible-text extraction. |
+| `app/services/providers/website_fake.py` | Deterministic fake keyed by URL; records calls. |
+| `app/services/research.py` | Research service: freshness, persistence, history, rollback. |
+| `app/services/enrichment.py` | Pure `build_enrichment` plus read-only `get_enrichment`. |
+| `app/routers/research.py` | Thin routes for research and enrichment. |
+
+**Outcomes.** `success` (complete HTML with readable text), `partial` (text
+extracted but the body hit `RESEARCH_MAX_RESPONSE_BYTES` or the text hit
+`RESEARCH_MAX_TEXT_CHARS`), `empty` (HTML fetched, no readable text), and
+`failed` with one safe `failure_category`: `invalid_url`,
+`disallowed_scheme`, `credentials_in_url`, `disallowed_port`,
+`blocked_destination`, `dns_resolution_failed`, `timeout`,
+`connection_failed`, `too_many_redirects`, `invalid_redirect`,
+`http_error`, `unsupported_content_type`, `malformed_response`. Only
+`success` and `partial` are *usable*. A fetch failure is a recorded outcome
+(HTTP 200), not an API error; raw exceptions and response bodies never leave
+the adapter.
+
+**Research model (`company_research`).** One row per attempt: `id`,
+`candidate_id` (FK, `ON DELETE CASCADE`), `requested_url` (the candidate's
+stored URL), `final_url` (last URL requested after permitted redirects),
+`fetched_at`, `fetcher`, `outcome`, `failure_category`, `http_status`,
+`content_type`, `page_title` (≤500 chars), `extracted_text` (≤
+`RESEARCH_MAX_TEXT_CHARS`, stored only for usable outcomes),
+`content_truncated`, `created_at`, `updated_at`. Check constraints enforce
+the outcome set and that `failure_category` is present exactly when
+`outcome = 'failed'`. Index: `(candidate_id, fetched_at)`.
+
+**History policy.** Append-only per attempt, so a later failure never
+overwrites earlier research. After each insert, in the same transaction, the
+service keeps the five most recent attempts (`HISTORY_LIMIT`) plus the
+latest usable record and deletes the rest for that candidate. The latest
+success is therefore always retained, and growth is bounded at six rows per
+candidate. Concurrent requests for one candidate may both fetch and both
+insert; pruning still bounds the result.
+
+**Freshness.** Usable research fetched within `RESEARCH_FRESHNESS_HOURS`
+(default 24) is returned with `reused: true` and no network call. Failed or
+empty attempts never count as fresh. `{"refresh": true}` forces a fetch;
+`RESEARCH_FRESHNESS_HOURS=0` disables reuse. There is no cache layer or
+background queue.
+
+**Provenance.** Research never modifies the candidate: `source_url`,
+`provider`, `provider_result_id`, `discovered_at`, and `description` keep
+their discovery values. Research provenance is `requested_url`,
+`final_url`, `fetched_at`, and `fetcher` on each row.
+
+**Transactions.** The read transaction is ended before the network fetch so
+no pooled connection is held during it. The insert and pruning then run in
+one transaction; any `SQLAlchemyError` rolls back and surfaces as
+`research_persistence_failed` (500), leaving earlier rows intact.
+
+**Enrichment.** `GET /companies/{id}/enrichment` returns the candidate's
+discovery fields, a `discovery` provenance block, `research_status`,
+`website` (latest usable research with text and provenance, or `null`), and
+`last_attempt` (most recent attempt of any outcome). It is a pure function
+of stored rows: no fetches, no writes, no timestamps generated, so repeated
+calls return identical output. Page text is third-party content, not
+verified facts; qualification and saved prospects are untouched (P3).
+
+**Status values** (research and enrichment responses): `available`,
+`partial`, `unavailable` (attempted, nothing usable), `not_researched`.
+
+**Error mapping.** `candidate_not_found` (404), `candidate_website_missing`
+(409, no network request), `validation_error` (422: bad path ID, unknown
+body field, non-boolean `refresh`), `research_persistence_failed` (500).
+
+#### SSRF protections
+
+Stored website URLs originate from third-party search results and are
+treated as untrusted. For the initial URL and every redirect target:
+
+1. **Syntax** (`check_url`, no network): absolute `http`/`https` only; no
+   userinfo (including an empty `@`); ports 80 and 443 only; no whitespace,
+   control characters, or backslashes; at most 2048 characters. A host is
+   either a canonical IP literal (IPv6 must be bracketed) or a DNS name with
+   valid LDH labels, at least two labels, and a top-level label that starts
+   with a letter. That rule rejects alternate numeric forms such as
+   `2130706433`, `0x7f.1`, `0177.0.0.1`, and `127.1` before any resolver
+   can interpret them. `localhost`, `*.localhost`, `*.local`, `*.internal`,
+   and `*.home.arpa` are blocked by name. IDN hosts are converted to
+   punycode.
+2. **Address policy** (`is_public_address`): an address must be
+   `is_global` and not private, loopback, link-local, multicast, reserved,
+   or unspecified. IPv4 addresses embedded in IPv6 (IPv4-mapped, 6to4,
+   Teredo, NAT64 `64:ff9b::/96`) are checked too. This blocks cloud
+   metadata endpoints (`169.254.169.254`, `fd00:ec2::254`,
+   `100.100.100.200`) and CGNAT space.
+3. **Resolution** (`resolve_public_addresses`): the host is resolved once
+   per hop and *every* returned address must pass the policy. One private
+   record rejects the host.
+4. **DNS pinning**: the request is sent to a validated IP address
+   (`https://93.184.216.34/path`). The original hostname is sent in the
+   `Host` header and as the TLS server name (HTTPX/httpcore `sni_hostname`
+   extension), so certificates are still verified against the hostname.
+   HTTPX never resolves the name itself, which closes the
+   validation-to-connection gap that DNS rebinding exploits. IPv4
+   addresses are tried first, and only connect errors or connect timeouts
+   move on to the next validated address (at most four).
+5. **Redirects** are never followed by HTTPX (`follow_redirects=False`).
+   The fetcher follows at most `RESEARCH_MAX_REDIRECTS` and re-runs steps
+   1–4 on each target, so a redirect to `127.0.0.1`, a metadata IP, a
+   private-resolving name, or a disallowed scheme or port is refused. A
+   same-host redirect is resolved again, so a rebind between hops is
+   caught.
+6. **Client hardening**: `trust_env=False`, so proxy variables are
+   ignored (a proxy would resolve names itself). Keep-alive is off, so a
+   TLS connection is never reused for another hostname that shares an IP.
+   The request is GET-only with `Accept-Encoding: identity`.
+7. **Bounds**: connect, read, write, and pool timeouts;
+   `RESEARCH_MAX_FETCH_SECONDS` total deadline checked before each hop,
+   each address, and each body chunk; the streamed body stops at
+   `RESEARCH_MAX_RESPONSE_BYTES`; only `text/html` and
+   `application/xhtml+xml` are parsed; text is capped at
+   `RESEARCH_MAX_TEXT_CHARS`.
+8. **Logging**: the service logs candidate ID, hostname, and outcome or
+   failure category only. HTTPX's own request logging (which includes full
+   URLs) is raised to WARNING in `app/logging_config.py`. Bodies and page
+   text are never logged.
+
+The research service applies step 1 before calling the fetcher, so an
+invalid stored URL is recorded as a failed attempt without any network
+activity. The fake fetcher performs no validation or network access. It is
+only for tests and offline runs.
+
+**Residual limitations (not guaranteed).**
+
+- DNS resolution uses the OS resolver (`socket.getaddrinfo`), which has no
+  timeout of its own. A slow resolver can exceed
+  `RESEARCH_MAX_FETCH_SECONDS` for that step.
+- Pinning depends on httpcore honouring the `sni_hostname` request
+  extension (verified for httpcore 1.0.x). An HTTP client upgrade must keep
+  that behaviour. A manual check confirmed that wrong-host, self-signed,
+  and expired certificates are still rejected through the pinned path.
+- The address policy relies on Python's `ipaddress` registry data, which
+  varies slightly across Python versions. Networks that route public
+  address space internally (for example, a corporate network announcing
+  public prefixes) are not detected.
+- Decompression is not requested (`identity`), but a server may still send
+  compressed content. Size limits apply to decoded bytes, read chunk by
+  chunk, so one compressed chunk can expand in memory before the limit
+  check.
+- Only ports 80/443 are allowed. Sites on other ports are recorded as
+  `disallowed_port` by design.
+- Certificate verification uses HTTPX's default CA bundle.
 
 ### Outreach Agent
 

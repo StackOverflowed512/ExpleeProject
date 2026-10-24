@@ -29,6 +29,14 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "TAVILY_API_KEY",
         "SEARCH_TIMEOUT_SECONDS",
         "SEARCH_MAX_RETRIES",
+        "WEBSITE_FETCHER",
+        "RESEARCH_CONNECT_TIMEOUT_SECONDS",
+        "RESEARCH_READ_TIMEOUT_SECONDS",
+        "RESEARCH_MAX_FETCH_SECONDS",
+        "RESEARCH_MAX_RESPONSE_BYTES",
+        "RESEARCH_MAX_REDIRECTS",
+        "RESEARCH_MAX_TEXT_CHARS",
+        "RESEARCH_FRESHNESS_HOURS",
     ):
         monkeypatch.delenv(name, raising=False)
     get_settings.cache_clear()
@@ -45,6 +53,7 @@ def test_settings() -> Settings:
         database_url=TEST_DATABASE_URL,
         log_level="WARNING",
         search_provider="fake",
+        website_fetcher="fake",
     )
 
 
