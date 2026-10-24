@@ -59,6 +59,8 @@ from app.services.qualification import to_qualification_record
 logger = logging.getLogger(__name__)
 
 BATCH_LIMIT = 10
+# Revision numbers tried when concurrent regenerate requests collide.
+_MAX_REVISION_ATTEMPTS = 5
 _EVIDENCE_FACTORS = ("industry_fit", "location_fit")
 
 
@@ -269,18 +271,62 @@ def _insert_revision(
     """Insert the next revision inside the caller's transaction.
 
     Returns the draft ID to use and whether this call created it.
+
+    Concurrency: two requests can compute the same next revision. The unique
+    constraint plus ``ON CONFLICT DO NOTHING`` lets exactly one insert win;
+    under READ COMMITTED the loser's next statement sees the winner's row.
+    Without ``regenerate`` the loser returns the winner's draft (one draft
+    per prospect). With ``regenerate`` each request asked for a *new*
+    revision, so the loser moves on to the next revision number instead of
+    discarding its draft, up to :data:`_MAX_REVISION_ATTEMPTS` times.
     """
-    latest = session.execute(
-        select(func.max(OutreachDraft.revision)).where(
-            OutreachDraft.campaign_id == campaign_id,
-            OutreachDraft.saved_prospect_id == plan.saved_prospect_id,
+    for _ in range(_MAX_REVISION_ATTEMPTS):
+        latest = session.execute(
+            select(func.max(OutreachDraft.revision)).where(
+                OutreachDraft.campaign_id == campaign_id,
+                OutreachDraft.saved_prospect_id == plan.saved_prospect_id,
+            )
+        ).scalar_one()
+        if latest is not None and not regenerate:
+            # A concurrent request drafted this prospect meanwhile; keep theirs.
+            return _draft_at(session, campaign_id, plan.saved_prospect_id, latest).id, False
+        revision = (latest or 0) + 1
+        inserted_id = _insert_row(
+            session,
+            campaign_id,
+            plan,
+            revision=revision,
+            subject=subject,
+            body=body,
+            provider=provider,
+            model=model,
+            metadata=metadata,
+            generated_at=generated_at,
         )
-    ).scalar_one()
-    if latest is not None and not regenerate:
-        # A concurrent request drafted this prospect meanwhile; keep theirs.
-        return _draft_at(session, campaign_id, plan.saved_prospect_id, latest).id, False
-    revision = (latest or 0) + 1
-    inserted_id = session.execute(
+        if inserted_id is not None:
+            return inserted_id, True
+        if not regenerate:
+            # Another request inserted this revision first; keep theirs.
+            return _draft_at(session, campaign_id, plan.saved_prospect_id, revision).id, False
+        # regenerate: that revision was taken concurrently; try the next one.
+    raise DraftPersistenceError("A draft revision could not be allocated; please retry.")
+
+
+def _insert_row(
+    session: Session,
+    campaign_id: int,
+    plan: _Plan,
+    *,
+    revision: int,
+    subject: str,
+    body: str,
+    provider: str,
+    model: str,
+    metadata: dict[str, Any],
+    generated_at: datetime,
+) -> int | None:
+    """Insert one draft revision; ``None`` when that revision already exists."""
+    return session.execute(
         pg_insert(OutreachDraft)
         .values(
             campaign_id=campaign_id,
@@ -302,10 +348,6 @@ def _insert_revision(
         .on_conflict_do_nothing(constraint="uq_outreach_drafts_campaign_prospect_revision")
         .returning(OutreachDraft.id)
     ).scalar_one_or_none()
-    if inserted_id is None:
-        # Another request inserted this revision first; keep theirs.
-        return _draft_at(session, campaign_id, plan.saved_prospect_id, revision).id, False
-    return inserted_id, True
 
 
 def generate_drafts(

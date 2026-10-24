@@ -607,8 +607,18 @@ draft is skipped and reported as `existing`, so retries never create
 duplicates and continue where a failed request stopped. With `regenerate`,
 a new `revision` is added and earlier drafts are never overwritten. A
 unique constraint on `(campaign_id, saved_prospect_id, revision)` plus
-`ON CONFLICT DO NOTHING` resolves concurrent requests to one row; the
-loser reports the winner's draft as `existing`.
+`ON CONFLICT DO NOTHING` resolves concurrent requests:
+
+- **Without `regenerate`:** concurrent requests resolve to one row. The
+  loser reports the winner's persisted draft as `existing`.
+- **With `regenerate`:** each request asked for a new revision, so a
+  request that loses the race for revision *n* moves on to *n + 1*.
+  Every request gets its own revision and no generated draft is
+  discarded. After 5 consecutive collisions it fails safely with
+  `draft_persistence_failed`.
+
+Both cases are tested with two threads racing against PostgreSQL
+(`tests/integration/test_outreach_concurrency.py`).
 
 **Draft model (`outreach_drafts`).**
 

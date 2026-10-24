@@ -433,9 +433,27 @@ draft generation with versioned prompts; draft states.
 - Migrations were not applied to the configured `explee` development
   database. Run `alembic upgrade head` there before using the new
   endpoints.
-- True concurrent generation from two processes was not exercised; the
-  race is simulated in one process, and the unique constraint is tested
-  directly.
+- Concurrent generation is tested with two threads, each with its own
+  database sessions, racing against PostgreSQL
+  (`tests/integration/test_outreach_concurrency.py`). Separate OS
+  processes were not used; the threads exercise the same database-level
+  conflict path.
+
+**Follow-up: real concurrency tests (2026-10-24, PR #9 review)**
+
+- A barrier in the fake generator makes two `generate_drafts` calls both
+  read the database and call the provider before either persists.
+- **Default mode** (already correct): exactly one draft is stored; one
+  call reports `generated` and the other `existing`, and both return the
+  same persisted draft.
+- **Bug found and fixed for `regenerate`:** concurrent requests computed
+  the same next revision, and the loser's freshly generated draft was
+  discarded and reported as `existing`. Now a regenerate request that
+  loses the race moves on to the next revision, so each request gets its
+  own revision, numbered 1..n with no gaps or duplicates (verified over
+  repeated races). It gives up safely with `draft_persistence_failed`
+  after 5 collisions, and that path is tested too.
+- The concurrency tests passed in five consecutive runs.
 
 **Follow-up: CHECK constraint names (migration `0006`, 2026-10-24)**
 
