@@ -193,6 +193,7 @@ Revisions:
 | `0003_qualification_prospects` | P3 | `company_qualifications` (append-only runs) and `saved_prospects` (unique per candidate) |
 | `0004_qualification_preliminary` | P3 | widens the qualification status check to allow `preliminary` (no data changes) |
 | `0005_campaigns_drafts` | P4 | `campaigns`, `campaign_prospects` (unique per campaign), and `outreach_drafts` (`pending` only) |
+| `0006_check_constraint_names` | P4 follow-up | renames the CHECK constraints from `0002`–`0004` to the model names (no data or rule changes) |
 
 Existing Phase 1 and Phase 2 databases upgrade in place with
 `alembic upgrade head`. Every revision is additive, so existing candidates

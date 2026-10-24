@@ -638,14 +638,15 @@ ties by ID (`limit`/`offset`, optional `saved_prospect_id`).
 
 **Migration note.** `0005_campaigns_drafts` names its CHECK constraints with
 `op.f()`, so they match the models (for example
-`ck_outreach_drafts_state_valid`). Migrations `0002`–`0004` created
+`ck_outreach_drafts_state_valid`). Migrations `0002`–`0004` had created
 their CHECK constraints with doubled names (for example
-`ck_company_qualifications_ck_company_qualifications_score_range`, some
-truncated with a hash). The doubling comes from the naming convention
-being applied a second time. Those constraints are enforced, but their
-names differ from a `create_all` database; `alembic check` does not
-compare CHECK constraints. They were left unchanged in P4 (see the
-implementation plan).
+`ck_company_qualifications_ck_company_qualifications_score_range`),
+because Alembic applied the naming convention a second time.
+`0006_check_constraint_names` renames them to the model names. A
+migration test now asserts that every table's CHECK names at head match
+the names derived from the models, which `alembic check` cannot do.
+New migrations that name CHECK constraints inside `op.create_table` must
+wrap the final name in `op.f()`.
 
 ### Mistral
 

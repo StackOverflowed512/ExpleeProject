@@ -15,13 +15,14 @@ from collections.abc import Iterator
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Connection, Engine, create_engine, inspect, text
+from sqlalchemy import CheckConstraint, Connection, Engine, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.config import PROJECT_ROOT
 from app.models import Base
 
-HEAD_REVISION = "0005_campaigns_drafts"
+HEAD_REVISION = "0006_check_constraint_names"
+PHASE4_REVISION = "0005_campaigns_drafts"
 PHASE3_PRELIMINARY_REVISION = "0004_qualification_preliminary"
 PHASE3_REVISION = "0003_qualification_prospects"
 PHASE2_REVISION = "0002_company_research"
@@ -658,5 +659,137 @@ def test_upgrade_from_phase3_head_preserves_all_rows(migration_database: str) ->
         assert not {"campaigns", "campaign_prospects", "outreach_drafts"} & tables
         assert restored == (1, 1, 2, 1)
     finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+
+# -- 0006: CHECK constraint names --------------------------------------------------
+def _model_check_names() -> dict[str, set[str]]:
+    """CHECK names the models produce via the ``ck`` naming convention."""
+    expected: dict[str, set[str]] = {}
+    for table in Base.metadata.sorted_tables:
+        prefix = f"ck_{table.name}_"
+        names = set()
+        for constraint in table.constraints:
+            if not isinstance(constraint, CheckConstraint):
+                continue
+            # After create_all has run, SQLAlchemy has already replaced the
+            # raw name ("status_valid") with the final one; never prefix twice.
+            name = str(constraint.name)
+            names.add(name if name.startswith(prefix) else prefix + name)
+        if names:
+            expected[table.name] = names
+    return expected
+
+
+def _database_check_names(engine: Engine) -> dict[str, set[str]]:
+    schema = inspect(engine)
+    found: dict[str, set[str]] = {}
+    for table in schema.get_table_names():
+        names = {c["name"] for c in schema.get_check_constraints(table)}
+        if names:
+            found[table] = names
+    return found
+
+
+def test_check_constraint_names_match_models_at_head(inspector: Engine) -> None:
+    expected = _model_check_names()
+    assert set(expected) == {
+        "company_research",
+        "company_qualifications",
+        "campaigns",
+        "campaign_prospects",
+        "outreach_drafts",
+    }
+    assert _database_check_names(inspector) == expected
+
+
+def test_constraint_rename_round_trip_restores_original_names(
+    migration_database: str,
+) -> None:
+    """Upgrading fixes the names; downgrading restores the exact old ones."""
+    config = _alembic_config(migration_database)
+    engine = create_engine(migration_database)
+    count_all = text(
+        "SELECT (SELECT count(*) FROM company_candidates), "
+        "(SELECT count(*) FROM company_research), "
+        "(SELECT count(*) FROM company_qualifications)"
+    )
+    try:
+        with engine.begin() as connection:
+            connection.execute(_DROP_SCHEMA)
+        command.upgrade(config, PHASE4_REVISION)
+        original = _database_check_names(engine)
+        assert "ck_company_qualifications_ck_company_qualifications_score_range" in original[
+            "company_qualifications"
+        ]
+        with engine.begin() as connection:
+            candidate_id = _insert_candidate(connection, "rename.example")
+            connection.execute(
+                _INSERT_RESEARCH, {"cid": candidate_id, "outcome": "success", "failure": None}
+            )
+            connection.execute(
+                _INSERT_QUALIFICATION, {"cid": candidate_id, "status": "qualified", "score": 80}
+            )
+            before = tuple(connection.execute(count_all).one())
+
+        command.upgrade(config, "head")
+        assert _database_check_names(engine) == _model_check_names()
+        with engine.begin() as connection:
+            assert tuple(connection.execute(count_all).one()) == before
+            # Constraints still enforce their rules after the rename.
+            with pytest.raises(IntegrityError):
+                with connection.begin_nested():
+                    connection.execute(
+                        _INSERT_QUALIFICATION,
+                        {"cid": candidate_id, "status": "qualified", "score": 101},
+                    )
+
+        command.downgrade(config, PHASE4_REVISION)
+        assert _database_check_names(engine) == original
+        with engine.begin() as connection:
+            assert tuple(connection.execute(count_all).one()) == before
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+
+def test_full_downgrade_still_works_after_rename(migration_database: str) -> None:
+    """0004's downgrade drops a constraint by its old name; 0006 must restore it."""
+    config = _alembic_config(migration_database)
+    engine = create_engine(migration_database)
+    try:
+        command.upgrade(config, "head")
+        command.downgrade(config, PHASE2_REVISION)
+        with engine.begin() as connection:
+            tables = set(inspect(connection).get_table_names())
+        assert "company_qualifications" not in tables
+        assert "company_research" in tables
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+
+def test_rename_is_a_no_op_when_names_are_already_correct(migration_database: str) -> None:
+    """A create_all database stamped at 0005 keeps its (correct) names."""
+    config = _alembic_config(migration_database)
+    engine = create_engine(migration_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(_DROP_SCHEMA)
+        Base.metadata.create_all(engine)
+        command.stamp(config, PHASE4_REVISION)
+        assert _database_check_names(engine) == _model_check_names()
+
+        command.upgrade(config, "head")
+        assert _database_check_names(engine) == _model_check_names()
+        with engine.connect() as connection:
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert revision == HEAD_REVISION
+    finally:
+        with engine.begin() as connection:
+            connection.execute(_DROP_SCHEMA)
         command.upgrade(config, "head")
         engine.dispose()

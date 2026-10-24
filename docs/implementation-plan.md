@@ -437,17 +437,31 @@ draft generation with versioned prompts; draft states.
   race is simulated in one process, and the unique constraint is tested
   directly.
 
-**Known issue (pre-existing, not changed in P4)**
+**Follow-up: CHECK constraint names (migration `0006`, 2026-10-24)**
 
-- Migrations `0002`–`0004` created their CHECK constraints with doubled
-  names (for example
-  `ck_company_qualifications_ck_company_qualifications_score_range`, some
-  truncated with a hash). Alembic applies the naming convention to names
-  that were already final. The constraints are enforced, but their names
-  differ from the models and from `create_all` databases. `alembic check`
-  does not compare CHECK constraints, so it does not report this. A
-  dedicated migration renaming them is a suggested follow-up; P4 leaves
-  the Phase 2/3 schema untouched.
+- Migrations `0002`–`0004` created their six CHECK constraints with
+  doubled names, because Alembic applied the naming convention to names
+  that were already final. For example:
+  `ck_company_qualifications_ck_company_qualifications_score_range`, and
+  `..._sta_abd7` where the 63-character limit forced a truncated MD5
+  suffix. The constraints were always enforced, but their names differed
+  from the models and from `create_all` databases. `alembic check` does
+  not compare CHECK constraints, so it never reported this.
+- `0006_check_constraint_names` renames them to the model names with
+  `ALTER TABLE ... RENAME CONSTRAINT`. Definitions and data are
+  unchanged. Each rename happens only when the doubled name exists, so
+  the migration is a no-op on databases whose names are already
+  correct.
+- The downgrade restores the exact doubled names, computed with
+  SQLAlchemy's truncation rule. Migration `0004`'s downgrade depends on
+  those names.
+- Migrations `0001`–`0005` were not edited.
+- Verified on `explee_test`:
+  - after upgrading, every table's CHECK names equal the model names;
+  - downgrading to `0005` restores the original names, with rows intact
+    and constraints still enforced;
+  - a full downgrade to `0002` still works;
+  - a `create_all` database stamped at `0005` upgrades unchanged.
 
 ## P5 — Outreach: approval and delivery
 
