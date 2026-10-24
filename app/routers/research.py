@@ -9,12 +9,13 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, Path, Request
+from fastapi import APIRouter, Body, Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
 from app.database import get_session, get_session_factory
 from app.errors import AppError
+from app.routers.params import CandidateId
 from app.schemas.research import (
     EnrichedCompany,
     ResearchHistoryResponse,
@@ -37,11 +38,6 @@ from app.services.research import (
 )
 
 router = APIRouter(tags=["research"])
-
-CandidateId = Annotated[
-    int,
-    Path(ge=1, le=2_147_483_647, description="Persisted company candidate ID."),
-]
 
 _NOT_FOUND = {404: {"description": "Unknown candidate (error envelope)."}}
 _VALIDATION = {422: {"description": "Request validation failed (error envelope)."}}

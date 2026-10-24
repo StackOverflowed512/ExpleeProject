@@ -235,12 +235,126 @@ partial-data handling.
 **Scope:** rule-based qualification scoring with rationale; saved prospect
 model and API; search/filtering of saved prospects; deduplication rules.
 
+**Implementation notes (2026-10-24)**
+
+- Rule engine: `app/services/qualification_rules.py`, version
+  `qualification-rules/v2`. It is pure Python (no LLM, database, network,
+  or clock) and uses three fixed-weight factors: `industry_fit` 50
+  (required), `location_fit` 30, `exclusion_check` 20. Evidence has a level
+  (`website`, `domain`, or `discovery`), and terms are looked up on the
+  website first. Absence counts only when a complete research page was
+  read. Statuses are `qualified` (industry fit confirmed by the company's
+  website), `preliminary` (score meets the threshold but industry fit
+  rests only on search-result data; not saveable), `unqualified`, and
+  `insufficient_evidence`. Full rules are in `docs/architecture.md`.
+- Criteria: `QualificationCriteria`, a validated, canonicalized
+  target-market profile (keywords, locations, TLDs, exclusions, threshold,
+  minimum coverage). It is supplied per request, with documented defaults
+  (`default-b2b-software`, threshold 60, coverage 0.5). Excluded keywords
+  may not repeat target terms.
+- Persistence (migrations `0003_qualification_prospects`, additive, and
+  `0004_qualification_preliminary`, which only widens the status check
+  constraint):
+  - `company_qualifications` is append-only and stores the rule version,
+    criteria, score, status, threshold, coverage, factors with evidence,
+    rationale, and timestamps.
+  - `saved_prospects` has a unique `candidate_id` and an FK to the
+    justifying qualification, stated explicitly as `ON DELETE NO ACTION`.
+- API:
+  - `POST /companies/{id}/qualify` (201).
+  - `GET /companies/{id}/qualifications`: `total`, `limit`, `latest`,
+    and `history`.
+  - `POST /companies/{id}/save`: 201 when created, 200 with the existing
+    prospect unchanged.
+  - `GET /prospects`: search, filters, deterministic sort, bounded
+    pagination.
+  - `GET /prospects/{id}`.
+- Saving is enforced in the service layer. It requires a persisted v2
+  `qualified` run whose score is at or above its recorded threshold.
+  Duplicates are prevented by the unique constraint plus
+  `ON CONFLICT DO NOTHING`.
+- `CandidateId` moved to `app/routers/params.py` so all routers share one
+  definition.
+
 **Exit criteria**
 
-- Qualification thresholds and rationale are persisted and auditable.
-- Saving a prospect requires qualification output.
-- Duplicate prospects are prevented or merged deterministically.
-- End-to-end flow tested with fakes from discovery to saved prospect.
+- [x] Qualification thresholds and rationale are persisted and auditable:
+      every run is a new row with rule version, canonical criteria, factor
+      evidence, and rationale.
+- [x] Saving a prospect requires qualification output. The backend refuses
+      saves with no run (409 `qualification_required`) and with
+      `preliminary`, `unqualified`, `insufficient_evidence`, or v1 runs
+      (409 `prospect_not_qualified`), and it re-checks score ≥ threshold.
+- [x] Duplicate prospects are prevented deterministically: a unique
+      constraint, `ON CONFLICT DO NOTHING`, and the existing prospect
+      returned unchanged. The race path is covered by a test that simulates
+      a concurrent insert.
+- [x] End-to-end flow tested with fakes: discovery (`FakeSearchProvider`) →
+      research (`FakeWebsiteFetcher`) → qualify → save → search → detail
+      (`tests/integration/test_prospects_api.py`).
+- [x] Migration `0003` upgrades a Phase 2 database with candidates and
+      research without loss. Migration `0004` upgrades a `0003` database
+      containing candidates, research, qualifications, and a prospect
+      with all rows intact. A downgrade is refused while `preliminary`
+      rows exist. All of this is automated on `explee_test`.
+      `alembic upgrade head` (`0001 -> 0004`) followed by `alembic check`
+      on a freshly reset `explee_test` reported "No new upgrade operations
+      detected" (2026-10-24).
+- [x] Full suite after the second review round (2026-10-24, Python
+      3.14.8, PostgreSQL 17, `TEST_DATABASE_URL` → `explee_test`): 612
+      passed, with the existing Starlette/httpx deprecation warning.
+      Without a test database: 474 passed, 138 skipped.
+- [x] Phase 0–2 regression tests pass. Fixture updates only: truncate and
+      drop the new tables, and the head revision is now `0004`.
+- [x] No Mistral, outreach, UI, authentication, Docker, or background
+      workers added; no new dependencies.
+
+**Not verified**
+
+- The configured `explee` database contained no candidate or research
+  rows when it was upgraded, so preservation of real data was verified only
+  by the automated migration test on `explee_test`.
+- True simultaneous saves from two processes were not exercised; the race
+  is simulated in one process, and the database constraint is tested
+  directly.
+- Migrations were verified only on the disposable `explee_test`
+  database. The configured `explee` development database reports
+  `0004_qualification_preliminary` (it was upgraded outside these
+  sessions) and holds no candidate or research rows, so real-data
+  preservation rests on the automated migration tests.
+- SonarCloud: the PR's quality gate failed on "Reliability Rating on New
+  Code" for both pushed commits. The project is private and the findings
+  could not be read without a SonarCloud sign-in. Exact float equality
+  in tests (rule `python:S1244`, a reliability rule) was fixed with
+  `pytest.approx`; whether that clears the gate is unverified until the
+  branch is pushed and re-analysed.
+
+**Review follow-ups (PR #8, 2026-10-24)**
+
+- Rules v1 → v2: a keyword in a search-result title or snippet (for
+  example a listicle such as "Best Software Companies in Berlin") could
+  produce `qualified` without website research. v2 treats discovery
+  matches as preliminary, discards them once a complete page refutes
+  them, and requires website-confirmed industry fit for `qualified`.
+  Only v2 runs can justify a save.
+- History response now includes `limit`.
+- `matched_signals` and `missing_signals` are de-duplicated, and a term
+  matched by any factor is not reported as missing.
+- `saved_prospects.qualification_id` states `ON DELETE NO ACTION`
+  explicitly (equal to the existing database behaviour, so no FK
+  migration; `alembic check` is clean). `NO ACTION` was chosen over
+  `RESTRICT` so candidate deletion can still cascade.
+- Stored criteria are returned through a lenient `StoredCriteria`
+  schema, so tightened input validation (such as the new overlap rule)
+  can never make older runs unreadable.
+- Second round: the history contract (`candidate_id`, `total`, `limit`,
+  `latest`, `history`) is pinned by API, validation, and OpenAPI tests
+  and documented with an example. Signal lists are de-duplicated inside
+  each factor (one evidence item and one list per term, even for
+  non-canonical criteria) and across factors. The new response-level
+  `unconfirmed_signals` aggregate reports each term once, in the
+  strongest applicable list. Rule semantics are unchanged for valid
+  criteria, so the version stays `qualification-rules/v2`.
 
 ## P4 — Outreach: campaigns and drafts
 
