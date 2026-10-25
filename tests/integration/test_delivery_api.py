@@ -15,10 +15,12 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.config import Settings
 from app.database import get_session, get_session_factory
 from app.schemas.campaigns import CampaignCreate
 from app.services.campaigns import create_campaign
 from app.services.drafts import generate_drafts
+from app.services.providers import build_email_provider
 from app.services.providers.drafts_fake import FakeDraftGenerator
 from app.services.providers.email import EmailDeliveryUncertainError, EmailTimeoutError
 from app.services.providers.email_fake import FakeEmailProvider
@@ -50,7 +52,9 @@ def app_factory(
     def _make(provider: Any = None, **settings: Any) -> Any:
         overrides = {"email_sender": "alex@routewise.example"} | settings
         application: FastAPI = build_app(**overrides)
-        application.state.email_provider = provider or FakeEmailProvider()
+        application.state.email_provider = provider or FakeEmailProvider(
+            delivers_email=True
+        )
 
         def _session_override() -> Iterator[Session]:
             session = db_session_factory()
@@ -150,8 +154,25 @@ async def test_dry_run_and_delivery_disabled_by_default(app_factory: Any, draft_
     assert provider.attempts == 0
 
 
+async def test_fake_provider_cannot_mark_a_draft_sent(app_factory: Any, draft_id: int) -> None:
+    """EMAIL_PROVIDER=fake + EMAIL_DRY_RUN=false: deliver is refused (PR #10 P1)."""
+    configured = build_email_provider(
+        Settings(_env_file=None, email_provider="fake", email_dry_run=False)
+    )
+    assert isinstance(configured, FakeEmailProvider)
+    async with app_factory(configured, email_dry_run=False) as http:
+        await _approve(http, draft_id)
+        real = await http.post(f"/drafts/{draft_id}/send", json={"mode": "deliver"})
+        detail = (await http.get(f"/drafts/{draft_id}")).json()
+
+    _envelope(real, 409, "delivery_disabled")
+    assert configured.attempts == 0 and configured.sent == []
+    assert detail["state"] == "approved"
+    assert detail["send_attempts"] == []
+
+
 async def test_delivery_when_enabled_and_idempotent_repeat(app_factory: Any, draft_id: int) -> None:
-    provider = FakeEmailProvider()
+    provider = FakeEmailProvider(delivers_email=True)
     async with app_factory(provider, email_dry_run=False) as http:
         await _approve(http, draft_id)
         sent = await http.post(f"/drafts/{draft_id}/send", json={"mode": "deliver"})
@@ -168,7 +189,7 @@ async def test_delivery_when_enabled_and_idempotent_repeat(app_factory: Any, dra
 
 async def test_definite_failure_envelope_is_retry_safe(app_factory: Any, draft_id: int) -> None:
     timeout = EmailTimeoutError("The mail server did not respond in time.")
-    provider = FakeEmailProvider(error=timeout)
+    provider = FakeEmailProvider(delivers_email=True, error=timeout)
     async with app_factory(provider, email_dry_run=False) as http:
         await _approve(http, draft_id)
         response = await http.post(f"/drafts/{draft_id}/send", json={"mode": "deliver"})
@@ -180,7 +201,8 @@ async def test_definite_failure_envelope_is_retry_safe(app_factory: Any, draft_i
 
 
 async def test_uncertain_outcome_and_manual_resolution(app_factory: Any, draft_id: int) -> None:
-    provider = FakeEmailProvider(error=EmailDeliveryUncertainError("maybe delivered"))
+    uncertain = EmailDeliveryUncertainError("maybe delivered")
+    provider = FakeEmailProvider(delivers_email=True, error=uncertain)
     async with app_factory(provider, email_dry_run=False) as http:
         await _approve(http, draft_id)
         uncertain = await http.post(f"/drafts/{draft_id}/send", json={"mode": "deliver"})
@@ -216,7 +238,7 @@ async def test_missing_sender_returns_not_configured(app_factory: Any, draft_id:
 async def test_send_body_cannot_override_the_approved_message(
     app_factory: Any, draft_id: int
 ) -> None:
-    provider = FakeEmailProvider()
+    provider = FakeEmailProvider(delivers_email=True)
     async with app_factory(provider, email_dry_run=False) as http:
         await _approve(http, draft_id)
         for extra in (

@@ -750,8 +750,11 @@ The service itself verifies, with the draft row locked, that:
 3. a recorded approval exists (409 `draft_not_approved`), and its hash
    still matches the draft's current revision, recipient, subject and body
    (409 `approval_content_mismatch`; tampering with either row is caught);
-4. for `deliver`: `EMAIL_DRY_RUN=false` (409 `delivery_disabled`) and
-   `EMAIL_SENDER` is set (503 `email_not_configured`);
+4. for `deliver`: `EMAIL_DRY_RUN=false` and a provider that really
+   delivers email (`delivers_email`; only the SMTP adapter, never the
+   fake, so a simulated send is never recorded as `sent`) (409
+   `delivery_disabled`), and `EMAIL_SENDER` is set (503
+   `email_not_configured`);
 5. no other revision for the same campaign prospect is sending, sent or
    possibly sent (409 `prospect_already_emailed`).
 
@@ -802,7 +805,12 @@ in flight, so it returns 409 `delivery_in_progress`). The stuck
 resolution is stored as its own `manual_resolution` attempt.
 
 **Audit trail** (`email_send_attempts`). Rows are never deleted; one row
-per dry run, real attempt or manual resolution, with:
+per dry run, real attempt or manual resolution. The foreign keys from
+`draft_approvals` and `email_send_attempts` are `ON DELETE RESTRICT`:
+deleting a draft (or its campaign, prospect, or candidate) that has an
+approval or send history is refused instead of silently erasing the audit
+record. Purging such data is a deliberate manual step (attempts, then the
+approval, then the draft). Each row has:
 
 - the draft and approval IDs;
 - `mode` (`dry_run`, `real` or `manual_resolution`);

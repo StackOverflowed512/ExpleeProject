@@ -122,6 +122,7 @@ class ExplodingProvider:
     """A provider that must never be called."""
 
     name = "exploding"
+    delivers_email = True
 
     def send(self, message: OutgoingEmail) -> DeliveryResult:
         raise AssertionError("provider must not be called")
@@ -261,6 +262,22 @@ def test_real_delivery_is_refused_while_dry_run_only(
     assert _state(db_session_factory, draft_id) == "approved"
 
 
+def test_fake_provider_never_records_a_real_send(
+    db_session: Session, db_session_factory: sessionmaker[Session], draft_id: int
+) -> None:
+    """EMAIL_PROVIDER=fake with EMAIL_DRY_RUN=false must fail closed (PR #10 P1)."""
+    _approve(db_session, draft_id)
+    fake = FakeEmailProvider()  # the configured default: delivers_email=False
+    with pytest.raises(DeliveryDisabledError, match="does not deliver email"):
+        _send(db_session_factory, fake, draft_id, dry_run_only=False)
+    assert fake.attempts == 0 and fake.sent == []
+    assert _attempts(db_session_factory, draft_id) == []
+    assert _state(db_session_factory, draft_id) == "approved"
+    # Dry runs still work with the fake provider.
+    dry = _send(db_session_factory, fake, draft_id, mode="dry_run", dry_run_only=False)
+    assert dry.outcome == "dry_run" and fake.attempts == 0
+
+
 def test_real_delivery_requires_a_sender(
     db_session: Session, db_session_factory: sessionmaker[Session], draft_id: int
 ) -> None:
@@ -275,7 +292,7 @@ def test_successful_delivery_uses_the_approved_snapshot_and_is_audited(
     db_session: Session, db_session_factory: sessionmaker[Session], draft_id: int
 ) -> None:
     _approve(db_session, draft_id)
-    provider = FakeEmailProvider()
+    provider = FakeEmailProvider(delivers_email=True)
 
     result = _send(db_session_factory, provider, draft_id)
 
@@ -299,7 +316,7 @@ def test_sent_draft_is_never_sent_again(
     db_session: Session, db_session_factory: sessionmaker[Session], draft_id: int
 ) -> None:
     _approve(db_session, draft_id)
-    provider = FakeEmailProvider()
+    provider = FakeEmailProvider(delivers_email=True)
     first = _send(db_session_factory, provider, draft_id)
     again = _send(db_session_factory, provider, draft_id)
     dry = _send(db_session_factory, provider, draft_id, mode="dry_run")
@@ -315,7 +332,7 @@ def test_definite_failure_is_audited_and_retry_is_allowed(
     db_session: Session, db_session_factory: sessionmaker[Session], draft_id: int
 ) -> None:
     _approve(db_session, draft_id)
-    failing = FakeEmailProvider(error=EmailRejectedError("refused"))
+    failing = FakeEmailProvider(delivers_email=True, error=EmailRejectedError("refused"))
     with pytest.raises(DeliveryFailed) as caught:
         _send(db_session_factory, failing, draft_id)
     assert caught.value.cause.uncertain is False
@@ -324,7 +341,7 @@ def test_definite_failure_is_audited_and_retry_is_allowed(
     assert (attempt.outcome, attempt.failure_category) == ("failed", "email_rejected")
     assert attempt.id == caught.value.attempt_id
 
-    retry = _send(db_session_factory, FakeEmailProvider(), draft_id)
+    retry = _send(db_session_factory, FakeEmailProvider(delivers_email=True), draft_id)
     assert retry.outcome == "sent"
     assert [a.outcome for a in _attempts(db_session_factory, draft_id)] == ["failed", "sent"]
 
@@ -343,6 +360,7 @@ def test_uncertain_outcome_blocks_automatic_resend(
 
     class Uncertain:
         name = "flaky"
+        delivers_email = True
 
         def send(self, message: OutgoingEmail) -> DeliveryResult:
             raise error
@@ -417,9 +435,9 @@ def test_only_one_revision_per_campaign_prospect_can_be_emailed(
     ).items[0].draft
     _approve(db_session, draft_id)
     _approve(db_session, second.id, revision=2)
-    _send(db_session_factory, FakeEmailProvider(), draft_id)
+    _send(db_session_factory, FakeEmailProvider(delivers_email=True), draft_id)
 
-    provider = FakeEmailProvider()
+    provider = FakeEmailProvider(delivers_email=True)
     with pytest.raises(ProspectAlreadyEmailedError):
         _send(db_session_factory, provider, second.id)
     assert provider.attempts == 0
@@ -430,7 +448,8 @@ def test_only_one_revision_per_campaign_prospect_can_be_emailed(
 def _make_uncertain(session: Session, factory: sessionmaker[Session], draft_id: int) -> None:
     _approve(session, draft_id)
     with pytest.raises(DeliveryFailed):
-        _send(factory, FakeEmailProvider(error=EmailDeliveryUncertainError("?")), draft_id)
+        uncertain = FakeEmailProvider(delivers_email=True, error=EmailDeliveryUncertainError("?"))
+        _send(factory, uncertain, draft_id)
 
 
 def test_resolve_as_delivered_marks_sent(
@@ -457,7 +476,8 @@ def test_resolve_as_not_delivered_allows_a_new_attempt(
         "confirmed_not_delivered",
     )
     assert _state(db_session_factory, draft_id) == "approved"
-    assert _send(db_session_factory, FakeEmailProvider(), draft_id).outcome == "sent"
+    resent = _send(db_session_factory, FakeEmailProvider(delivers_email=True), draft_id)
+    assert resent.outcome == "sent"
     outcomes = [(a.mode, a.outcome) for a in _attempts(db_session_factory, draft_id)]
     assert outcomes == [("real", "uncertain"), ("manual_resolution", "failed"), ("real", "sent")]
 
@@ -526,7 +546,7 @@ def test_claim_failure_rolls_back_and_sends_nothing(
         raise OperationalError("INSERT", {}, Exception("disk full"))
 
     monkeypatch.setattr(delivery_service, "_verify_and_claim", broken)
-    provider = FakeEmailProvider()
+    provider = FakeEmailProvider(delivers_email=True)
     with pytest.raises(DeliveryPersistenceError):
         _send(db_session_factory, provider, draft_id)
     monkeypatch.undo()
@@ -539,6 +559,7 @@ class BlockingProvider:
     """Holds delivery open until released, to create a real overlap."""
 
     name = "blocking"
+    delivers_email = True
 
     def __init__(self) -> None:
         self.entered = threading.Event()

@@ -3,6 +3,11 @@
 Used by tests and as the safe default (``EMAIL_PROVIDER=fake``). It never
 opens a network connection: "sent" messages are only appended to
 :attr:`FakeEmailProvider.sent`. Tests can script an error to raise.
+
+``delivers_email`` is ``False`` by default, so the delivery service refuses
+``mode="deliver"`` with this provider: ``EMAIL_PROVIDER=fake`` can never
+mark a draft ``sent``. Only tests set it to ``True``, to stand in for a real
+transport; configuration has no way to set it.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ class FakeEmailProvider:
     """In-memory provider that records messages instead of delivering them."""
 
     name: str = PROVIDER_NAME
+    delivers_email: bool = False
     error: EmailDeliveryError | None = None
     sent: list[OutgoingEmail] = field(default_factory=list)
     attempts: int = 0

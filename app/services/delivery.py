@@ -14,7 +14,9 @@ Dry runs never change the state and never call a provider.
 ``send_draft`` re-verifies everything itself before any delivery: the draft
 exists; a recorded approval matches its exact revision, recipient, subject,
 and body (content hash); it has not been sent; no in-flight or uncertain
-delivery is unresolved; the configuration allows the mode; and no other
+delivery is unresolved; the configuration allows the mode (real delivery
+needs ``EMAIL_DRY_RUN=false`` *and* a provider that really delivers email,
+so the fake provider can never mark a draft ``sent``); and no other
 revision for the same campaign prospect is sending, sent, or possibly sent.
 
 A real send runs in three steps so no database session is held during the
@@ -235,6 +237,12 @@ def _verify_and_claim(
     if dry_run_only:
         raise DeliveryDisabledError(
             "Real delivery is disabled (EMAIL_DRY_RUN=true); only dry runs are allowed."
+        )
+    if not provider.delivers_email:
+        raise DeliveryDisabledError(
+            f"The configured email provider ({provider.name!r}) does not deliver "
+            "email; set EMAIL_PROVIDER=smtp for real delivery. Only dry runs are "
+            "allowed."
         )
     if not sender:
         raise EmailNotConfiguredError("Real delivery needs EMAIL_SENDER to be configured.")

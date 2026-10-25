@@ -40,10 +40,10 @@ class EmailSendAttempt(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     draft_id: Mapped[int] = mapped_column(
-        ForeignKey("outreach_drafts.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("outreach_drafts.id", ondelete="RESTRICT"), nullable=False
     )
     approval_id: Mapped[int] = mapped_column(
-        ForeignKey("draft_approvals.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("draft_approvals.id", ondelete="RESTRICT"), nullable=False
     )
     mode: Mapped[str] = mapped_column(String(20), nullable=False)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)

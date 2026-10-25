@@ -598,6 +598,28 @@ provider protocol and one real adapter; send audit trail; dry-run path.
   sessions, not with separate OS processes. Both go through the same
   database row lock and unique-index conflict path.
 
+**Follow-up: PR #10 review (2026-10-25)**
+
+- **P1 fixed: the fake provider could mark a draft `sent`.** With
+  `EMAIL_PROVIDER=fake` and `EMAIL_DRY_RUN=false`, a `deliver` request
+  ran through the fake provider and recorded a real send. Providers now
+  declare `delivers_email`: `True` only for the SMTP adapter, and the
+  configured fake is always `False`. The service refuses `deliver` with
+  409 `delivery_disabled` before claiming anything, so no attempt is
+  recorded and the draft stays `approved`. Regression tests cover this at
+  the service and API level, using the provider exactly as
+  `build_email_provider` configures it.
+- **P2 fixed: audit history could be deleted by cascade.** The foreign keys
+  from `draft_approvals` and `email_send_attempts` are now
+  `ON DELETE RESTRICT`. Deleting a draft, campaign, or approval that has
+  history is refused, and a database test proves the history survives.
+  Migration `0007` was edited in place: it was unmerged, and no persistent
+  database had applied it (the dev database is at `0006`; `explee_test`
+  is rebuilt by the tests).
+- Full suite (`TEST_DATABASE_URL` → `explee_test`): 924 passed. Without a
+  test database: 688 passed, 236 skipped. `alembic upgrade head` and
+  `alembic check` on a freshly reset `explee_test`: no pending operations.
+
 ## P6 — Web interface
 
 **Scope:** Jinja2 templates and HTMX interactions for Explorer and Outreach;

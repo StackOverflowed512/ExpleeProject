@@ -503,6 +503,9 @@ explicit action in this local single-user workflow, recorded with the
 
 **Safe by default.** `EMAIL_PROVIDER=fake` and `EMAIL_DRY_RUN=true`, so a
 fresh setup can only record dry runs, and no email can leave the machine.
+The fake provider never delivers: `"mode": "deliver"` is refused with 409
+`delivery_disabled` unless `EMAIL_PROVIDER=smtp`, even with
+`EMAIL_DRY_RUN=false`, so a draft can never be marked `sent` by mistake.
 
 ```powershell
 # 1. Review the draft, then approve that exact revision for a recipient you choose
@@ -532,7 +535,7 @@ campaign prospect can ever be sent.
 **Errors.**
 
 - 409: `draft_not_approved`, `approval_content_mismatch` (the draft or
-  approval changed), `delivery_disabled` (dry-run only), `delivery_in_progress`,
+  approval changed), `delivery_disabled` (dry-run only, or the fake provider), `delivery_in_progress`,
   `delivery_outcome_uncertain`, `prospect_already_emailed`.
 - 503: `email_not_configured`.
 - Provider errors: `email_connection_failed`, `email_tls_failed`,

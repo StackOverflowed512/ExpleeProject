@@ -26,7 +26,7 @@ class DraftApproval(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     draft_id: Mapped[int] = mapped_column(
-        ForeignKey("outreach_drafts.id", ondelete="CASCADE"),
+        ForeignKey("outreach_drafts.id", ondelete="RESTRICT"),
         nullable=False,
         unique=True,
     )

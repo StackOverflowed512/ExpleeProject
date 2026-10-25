@@ -910,6 +910,27 @@ def test_delivery_guards_are_enforced_by_the_database(inspector: Engine) -> None
                     ),
                     {"d": draft_id, "a": approval_id},
                 )
+        # Audit history is never deleted implicitly (PR #10 P2): deleting the
+        # draft, its campaign, or the approval directly is refused.
+        campaign_id = connection.execute(
+            text("SELECT campaign_id FROM outreach_drafts WHERE id = :d"), {"d": draft_id}
+        ).scalar_one()
+        for statement, params in (
+            ("DELETE FROM outreach_drafts WHERE id = :d", {"d": draft_id}),
+            ("DELETE FROM campaigns WHERE id = :c", {"c": campaign_id}),
+            ("DELETE FROM draft_approvals WHERE id = :a", {"a": approval_id}),
+        ):
+            with pytest.raises(IntegrityError):
+                with connection.begin_nested():
+                    connection.execute(text(statement), params)
+        history = connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM draft_approvals WHERE draft_id = :d), "
+                "(SELECT count(*) FROM email_send_attempts WHERE draft_id = :d)"
+            ),
+            {"d": draft_id},
+        ).one()
+        assert tuple(history) == (1, 1)
         connection.rollback()
 
 

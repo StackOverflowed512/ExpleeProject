@@ -102,6 +102,10 @@ class EmailProvider(Protocol):
     """Contract every email delivery adapter must satisfy."""
 
     name: str
+    #: ``True`` only for adapters that hand messages to a real mail
+    #: transport. Real delivery is refused for any other provider, so a
+    #: simulated send can never be recorded as ``sent``.
+    delivers_email: bool
 
     def send(self, message: OutgoingEmail) -> DeliveryResult:
         """Deliver ``message`` or raise an :class:`EmailDeliveryError`.

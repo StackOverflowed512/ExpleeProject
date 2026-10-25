@@ -149,6 +149,10 @@ def test_builder_selects_providers() -> None:
     assert isinstance(smtp, SmtpEmailProvider)
     assert isinstance(smtp, EmailProvider)
     assert isinstance(FakeEmailProvider(), EmailProvider)
+    # Only the SMTP adapter really delivers; the configured fake never does.
+    assert smtp.delivers_email is True
+    fake = build_email_provider(Settings(_env_file=None, email_dry_run=False))
+    assert fake.delivers_email is False
 
 
 # -- fake SMTP client ------------------------------------------------------------------

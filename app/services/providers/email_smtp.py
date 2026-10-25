@@ -65,6 +65,7 @@ class SmtpEmailProvider:
     """Deliver approved messages through an SMTP server over TLS."""
 
     name = PROVIDER_NAME
+    delivers_email = True
     # Overridable in tests; never replaced at runtime.
     smtp_class: type[smtplib.SMTP] = smtplib.SMTP
     smtp_ssl_class: type[smtplib.SMTP_SSL] = smtplib.SMTP_SSL
