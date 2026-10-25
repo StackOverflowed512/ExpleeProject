@@ -749,6 +749,29 @@ server-rendered pages calling existing services.
 - The UI was not run against the development database `explee`. It is at
   `0007` with no rows (read-only check), so it is ready for the UI.
 
+**Follow-up: PR #11 code review (2026-10-25)**
+
+- Campaign page status was capped at the first 100 drafts. It now uses
+  `drafts.campaign_draft_summary`: the latest revision plus a count per
+  prospect, with no row cap. Tested with 35 prospects and 105 drafts.
+- The CSRF cookie is persistent (180 days), so tabs restored together share
+  one nonce. Two pages loading at the same moment on a browser's very first
+  visit can still race; the losing tab shows "reload the page", and nothing
+  changes.
+- HTMX fragment requests that fail get an error the size of their target
+  (`_error_fragment.html`), never a whole page nested inside the page.
+- Research notices fall back to a generic notice for unknown outcomes.
+- Draft errors are mapped through the class hierarchy (`draft_error`), so
+  subclasses keep their 409 or 5xx code in both the API and the UI.
+- Fragments skip the attention-count query and the delivery-mode banner,
+  the delivery poll loads only the delivery context, and a database outage
+  no longer triggers a second connection attempt for the error page.
+- Cleanup: `run_discovery` reuses `to_candidate_summary`; the unused
+  `optional_text` is removed; `scripts/build_css.py` takes `--tailwind
+  PATH` instead of reading an environment variable.
+- Full suite (`TEST_DATABASE_URL` → `explee_test`): 1037 passed. Without a
+  test database: 738 passed, 299 skipped. `alembic check` is clean.
+
 ## P7 — Reliability and operations
 
 **Scope:** structured request logging, provider timeouts/retries, rate-limit

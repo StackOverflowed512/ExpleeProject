@@ -58,9 +58,3 @@ async def handle_post(
         )
     return await run_in_threadpool(handler, form)
 
-
-def optional_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None

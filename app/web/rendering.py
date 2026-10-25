@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -93,6 +94,17 @@ def is_htmx(request: Request) -> bool:
     return request.headers.get("hx-request") == "true"
 
 
+_TARGET_ID = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+def fragment_target(request: Request) -> str | None:
+    """The element id an HTMX (non-boosted) request will swap, if well formed."""
+    if not is_htmx(request) or request.headers.get("hx-boosted") == "true":
+        return None
+    target = request.headers.get("hx-target")
+    return target if target and _TARGET_ID.match(target) else None
+
+
 def wants_fragment(request: Request, target: str) -> bool:
     """True for an HTMX request that targets ``#target`` (not a boosted page)."""
     return (
@@ -120,9 +132,15 @@ def render(
     *,
     status_code: int = 200,
     nav: str = "",
+    count_attention: bool = True,
 ) -> HTMLResponse:
-    """Render ``template`` with the shared page context and CSRF cookie."""
+    """Render ``template`` with the shared page context and CSRF cookie.
+
+    Fragments (``_*.html``) have no navigation, so they skip the attention
+    count and the delivery-mode banner.
+    """
     templates: Jinja2Templates = request.app.state.templates
+    full_page = not Path(template).name.startswith("_")
     nonce = csrf.request_nonce(request)
     issued = nonce is None
     if nonce is None:
@@ -134,9 +152,15 @@ def render(
         "csrf_header": csrf.HEADER_NAME,
         "nav": nav,
         "notice": presentation.notice_for(request.query_params.get("notice")),
-        "attention_count": _attention_count(request),
-        "delivery_mode": presentation.delivery_mode(
-            request.app.state.settings, request.app.state.email_provider
+        "attention_count": (
+            _attention_count(request) if full_page and count_attention else None
+        ),
+        "delivery_mode": (
+            presentation.delivery_mode(
+                request.app.state.settings, request.app.state.email_provider
+            )
+            if full_page
+            else None
         ),
     }
     page.update(context or {})
@@ -151,6 +175,9 @@ def render(
             samesite="strict",
             secure=request.url.scheme == "https",
             path=csrf.COOKIE_PATH,
+            # Persistent, so restored tabs share one nonce instead of each
+            # minting its own (which would invalidate the other tabs' forms).
+            max_age=csrf.COOKIE_MAX_AGE,
         )
     return response
 
@@ -222,24 +249,37 @@ def render_error_page(
     exc: BaseException | None = None,
 ) -> Response:
     """HTML error page for /ui requests. Never includes exception details."""
-    if isinstance(exc, SQLAlchemyError):
+    database_down = isinstance(exc, SQLAlchemyError)
+    if database_down:
         code = "database_unavailable"
         message = (
             "The database could not be reached or is not migrated. Check DATABASE_URL "
             "and run `alembic upgrade head`, then reload the page."
         )
         status_code = 503
+    context = {
+        "status_code": status_code,
+        "title": _ERROR_TITLES.get(status_code, "Request failed"),
+        "code": code,
+        "message": message,
+    }
     try:
+        target = fragment_target(request)
+        if target is not None:
+            # An HTMX fragment request gets an error the size of its target,
+            # never a whole page nested inside the current one.
+            return render(
+                request,
+                "_error_fragment.html",
+                context | {"target": target},
+                status_code=status_code,
+            )
         return render(
             request,
             "error.html",
-            {
-                "status_code": status_code,
-                "title": _ERROR_TITLES.get(status_code, "Request failed"),
-                "code": code,
-                "message": message,
-            },
+            context,
             status_code=status_code,
+            count_attention=not database_down,
         )
     except Exception:  # noqa: BLE001 - never fail while reporting a failure
         logger.exception("Could not render the error page")

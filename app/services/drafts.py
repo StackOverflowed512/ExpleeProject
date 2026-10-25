@@ -538,3 +538,43 @@ def count_drafts_by_state(session: Session, states: tuple[str, ...]) -> int:
     return session.execute(
         select(func.count()).select_from(OutreachDraft).where(OutreachDraft.state.in_(states))
     ).scalar_one()
+
+
+@dataclass(frozen=True)
+class ProspectDrafts:
+    """The newest draft revision for one campaign prospect and how many exist."""
+
+    latest: DraftRecord
+    revisions: int
+
+
+def campaign_draft_summary(session: Session, campaign_id: int) -> dict[int, ProspectDrafts]:
+    """Latest draft and revision count per saved prospect, for every prospect.
+
+    Read-only and unbounded by design (one row per prospect), so a campaign's
+    status is complete however many revisions exist.
+    """
+    get_campaign(session, campaign_id)
+    in_campaign = OutreachDraft.campaign_id == campaign_id
+    counts = {
+        prospect_id: count
+        for prospect_id, count in session.execute(
+            select(OutreachDraft.saved_prospect_id, func.count())
+            .where(in_campaign)
+            .group_by(OutreachDraft.saved_prospect_id)
+        ).tuples()
+    }
+    latest = session.execute(
+        select(OutreachDraft)
+        .where(in_campaign)
+        .order_by(
+            OutreachDraft.saved_prospect_id,
+            OutreachDraft.revision.desc(),
+            OutreachDraft.id.desc(),
+        )
+        .distinct(OutreachDraft.saved_prospect_id)
+    ).scalars()
+    return {
+        row.saved_prospect_id: ProspectDrafts(to_draft_record(row), counts[row.saved_prospect_id])
+        for row in latest
+    }

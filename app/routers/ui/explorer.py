@@ -42,6 +42,7 @@ from app.services.research import (
     to_summary,
 )
 from app.web.forms import FormData, field_errors, split_terms
+from app.web.presentation import research_notice
 from app.web.rendering import redirect, render, render_error_page, wants_fragment
 
 router = APIRouter()
@@ -228,7 +229,7 @@ async def company_research(
             return _company_page(request, session, candidate_id, status_code=409, error=str(exc))
         except ResearchPersistenceError as exc:
             return _company_page(request, session, candidate_id, status_code=500, error=str(exc))
-        notice = "research_reused" if run.reused else f"research_{run.attempt.outcome}"
+        notice = research_notice(run.attempt.outcome, reused=run.reused)
         return redirect(f"/ui/companies/{candidate_id}", notice=notice)
 
     return await handle_post(request, ("refresh",), handle)

@@ -176,6 +176,7 @@ async def test_search_validation_and_provider_errors_are_shown(
     assert too_many.status_code == 422
     assert failing.status_code == 503
     assert "The search did not complete" in failing.text
+    assert failing.text.count("<html") == 1  # the full page form, rendered once
     assert "TAVILY_API_KEY is not configured." in failing.text
     assert "Set TAVILY_API_KEY in .env" in failing.text
     assert _count(db_session_factory, CompanyCandidate) == 0

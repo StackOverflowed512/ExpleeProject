@@ -27,7 +27,7 @@
                 <td><a class="link font-medium" href="/ui/prospects/{{ p.id }}">{{ p.name }}</a><p class="text-xs text-slate-500">{{ p.domain or "" }}</p></td>
                 <td>{% if row.latest %}<a class="link" href="/ui/drafts/{{ row.latest.id }}">{{ row.latest.subject | truncate(70) }}</a>{% else %}<span class="text-slate-500">No draft yet</span>{% endif %}</td>
                 <td>{% if row.latest %}{{ badge("draft_state", row.latest.state) }}{% else %}—{% endif %}</td>
-                <td>{{ row.drafts | length }}</td>
+                <td>{{ row.revisions }}</td>
               </tr>
             {% endfor %}
           </tbody>

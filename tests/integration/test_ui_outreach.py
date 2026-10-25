@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.campaign import Campaign
@@ -491,3 +491,84 @@ async def test_delivery_history_filters_and_fragment(ui_factory: Any, draft_id: 
     assert "No delivery attempts" in filtered.text
     assert bogus.status_code == 200 and f"#{draft_id} · rev 1" in bogus.text
     assert fragment.text.lstrip().startswith('<section id="delivery-results"')
+
+
+# -- PR #11 review follow-ups ---------------------------------------------------------------
+async def test_campaign_page_shows_every_prospect_beyond_100_drafts(
+    ui_factory: Any, db_session: Session, db_session_factory: sessionmaker[Session]
+) -> None:
+    prospects = [
+        make_saved_prospect(db_session, name=f"Prospect {i:02d}", domain=f"p{i:02d}.com")
+        for i in range(35)
+    ]
+    brief = {k: v for k, v in BRIEF.items() if v}
+    campaign = create_campaign(
+        db_session,
+        CampaignCreate.model_validate(brief | {"prospect_ids": [p.id for p in prospects]}),
+    )
+    while generate_drafts(db_session_factory, FakeDraftGenerator(), campaign.id).remaining:
+        pass
+    # Two more revisions per prospect: 105 drafts, more than any single page.
+    for revision in (2, 3):
+        db_session.execute(
+            text(
+                "INSERT INTO outreach_drafts (campaign_id, saved_prospect_id, revision, subject, "
+                "body, prompt_version, prompt_sha256, provider, model, generation_metadata, "
+                "provenance, generated_at) SELECT campaign_id, saved_prospect_id, :rev, "
+                "'Revision ' || :rev, body, prompt_version, prompt_sha256, provider, model, "
+                "generation_metadata, provenance, generated_at FROM outreach_drafts "
+                "WHERE campaign_id = :c AND revision = 1"
+            ),
+            {"rev": revision, "c": campaign.id},
+        )
+    db_session.commit()
+
+    async with ui_factory() as ui:
+        page = await ui.get(f"/ui/campaigns/{campaign.id}")
+
+    html = page.text
+    assert "No draft yet" not in html
+    assert "0 prospects without a draft." in html
+    assert "105 drafts in total" in html
+    assert html.count("Revision 3") == 35  # every row links its newest revision
+
+
+async def test_fragment_errors_replace_only_their_target(
+    ui_factory: Any, draft_id: int
+) -> None:
+    async with ui_factory() as ui:
+        missing = await ui.get(
+            "/ui/drafts/9999/delivery",
+            headers={"HX-Request": "true", "HX-Target": "delivery-panel"},
+        )
+        full_page = await ui.get("/ui/drafts/9999")
+    assert missing.status_code == 404
+    assert missing.text.lstrip().startswith('<section id="delivery-panel"')
+    assert "<html" not in missing.text and "Draft 9999" in missing.text
+    assert "<html" in full_page.text
+
+
+async def test_fragments_skip_the_attention_count(
+    ui_factory: Any, draft_id: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.web import rendering
+
+    calls: list[str] = []
+    original = rendering._attention_count
+
+    def counting(request: Any) -> int | None:
+        calls.append(request.url.path)
+        return original(request)
+
+    monkeypatch.setattr(rendering, "_attention_count", counting)
+    async with ui_factory() as ui:
+        await ui.get(
+            f"/ui/drafts/{draft_id}/delivery",
+            headers={"HX-Request": "true", "HX-Target": "delivery-panel"},
+        )
+        await ui.get(
+            "/ui/deliveries", headers={"HX-Request": "true", "HX-Target": "delivery-results"}
+        )
+        assert calls == []
+        await ui.get(f"/ui/drafts/{draft_id}")
+    assert calls == [f"/ui/drafts/{draft_id}"]

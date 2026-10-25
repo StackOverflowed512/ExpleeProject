@@ -3,7 +3,8 @@
 A signed double-submit token:
 
 * The browser holds a random nonce in the ``explee_csrf`` cookie
-  (``HttpOnly``, ``SameSite=Strict``, path ``/ui``).
+  (``HttpOnly``, ``SameSite=Strict``, path ``/ui``, kept for 180 days so
+  tabs restored together reuse it rather than each issuing a new one).
 * Every page embeds ``HMAC-SHA256(secret, nonce)`` in each form's hidden
   ``csrf_token`` field, and in an ``X-CSRF-Token`` header for HTMX requests.
 * A state-changing request is accepted only when the submitted token matches
@@ -30,6 +31,7 @@ COOKIE_NAME = "explee_csrf"
 FIELD_NAME = "csrf_token"
 HEADER_NAME = "X-CSRF-Token"
 COOKIE_PATH = "/ui"
+COOKIE_MAX_AGE = 180 * 24 * 3600  # persistent; see rendering.render
 _NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _TOKEN_CONTEXT = b"explee-csrf-v1:"
 _ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})

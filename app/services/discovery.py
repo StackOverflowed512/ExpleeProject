@@ -260,22 +260,7 @@ def run_discovery(
         ) from exc
 
     rows = [session.get(CompanyCandidate, row_id) for row_id in persisted_ids]
-    results = [
-        CandidateSummary(
-            id=row.id,
-            name=row.name,
-            website_url=row.website_url,
-            domain=row.domain,
-            description=row.description,
-            provider=row.provider,
-            provider_result_id=row.provider_result_id,
-            source_url=row.source_url,
-            discovered_at=row.discovered_at,
-            updated_at=row.updated_at,
-        )
-        for row in rows
-        if row is not None
-    ]
+    results = [to_candidate_summary(row) for row in rows if row is not None]
 
     return DiscoveryResponse(
         query=query,

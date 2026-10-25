@@ -148,6 +148,8 @@ async def test_csrf_cookie_attributes(ui_factory: Any) -> None:
     assert cookie.startswith(f"{csrf.COOKIE_NAME}=")
     lowered = cookie.lower()
     assert "httponly" in lowered and "samesite=strict" in lowered and "path=/ui" in lowered
+    # Persistent, so tabs restored together share one nonce.
+    assert f"max-age={csrf.COOKIE_MAX_AGE}" in lowered
     assert "set-cookie" not in second.headers  # issued once, then reused
     expected = csrf.token_for(ui.app.state.csrf_secret, first.cookies[csrf.COOKIE_NAME])
     assert f'content="{expected}"' in first.text

@@ -12,7 +12,6 @@ from app.database import get_session, get_session_factory
 from app.routers.params import CampaignId
 from app.routers.ui.common import PAGE_SIZE, Offset, handle_post, page_links, settings_of
 from app.schemas.campaigns import MAX_CAMPAIGN_PROSPECTS, CampaignCreate
-from app.schemas.drafts import DraftRecord
 from app.schemas.prospects import ProspectQuery
 from app.services.campaigns import (
     CampaignNotFoundError,
@@ -30,9 +29,8 @@ from app.services.drafts import (
     DraftGenerationFailed,
     DraftPersistenceError,
     ProspectNotInCampaignError,
+    campaign_draft_summary,
     generate_drafts,
-    list_drafts,
-    to_draft_record,
 )
 from app.services.prospects import list_prospects, to_prospect_summary
 from app.web.forms import FormData, field_errors
@@ -167,18 +165,18 @@ def _campaign_page(
     except CampaignNotFoundError as exc:
         return render_error_page(request, 404, "campaign_not_found", str(exc))
     detail = to_campaign_detail(campaign, campaign_prospect_rows(session, campaign_id))
-    total, drafts = list_drafts(session, campaign_id, limit=100, offset=0)
-    by_prospect: dict[int, list[DraftRecord]] = {}
-    for row in drafts:
-        by_prospect.setdefault(row.saved_prospect_id, []).append(to_draft_record(row))
-    rows = [
-        {
-            "item": item,
-            "drafts": by_prospect.get(item.prospect.id, []),
-            "latest": (by_prospect.get(item.prospect.id) or [None])[-1],
-        }
-        for item in detail.prospects
-    ]
+    summary = campaign_draft_summary(session, campaign_id)
+    rows = []
+    for item in detail.prospects:
+        drafts = summary.get(item.prospect.id)
+        rows.append(
+            {
+                "item": item,
+                "latest": drafts.latest if drafts else None,
+                "revisions": drafts.revisions if drafts else 0,
+            }
+        )
+    total = sum(drafts.revisions for drafts in summary.values())
     settings = settings_of(request)
     return render(
         request,

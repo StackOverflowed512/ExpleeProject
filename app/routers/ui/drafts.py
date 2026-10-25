@@ -24,7 +24,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.database import get_session, get_session_factory
-from app.routers.drafts import DRAFT_ERRORS
+from app.routers.drafts import DRAFT_ERRORS, draft_error
 from app.routers.params import DraftId
 from app.routers.ui.common import PAGE_SIZE, Offset, page_links, handle_post, settings_of
 from app.schemas.drafts import ApproveDraftRequest, ResolveDeliveryRequest, SendDraftRequest
@@ -90,11 +90,26 @@ def drafts_page(
     )
 
 
-def _review_context(request: Request, session: Session, draft_id: int) -> dict[str, Any]:
+def _delivery_context(request: Request, session: Session, draft_id: int) -> dict[str, Any]:
+    """What the delivery panel needs (also used alone by the status poll)."""
     session.expire_all()
-    draft = get_draft(session, draft_id)
-    detail = draft_detail(session, draft)
+    detail = draft_detail(session, get_draft(session, draft_id))
     settings = settings_of(request)
+    return {
+        "draft": detail,
+        "actions": presentation.draft_actions(detail),
+        "mode": presentation.delivery_mode(settings, request.app.state.email_provider),
+        "sender": settings.email_sender,
+        "stale_minutes": int(STALE_SENDING_AFTER.total_seconds() // 60),
+        "send_errors": {},
+        "resolve_form": {"delivered": "", "note": ""},
+        "resolve_errors": {},
+    }
+
+
+def _review_context(request: Request, session: Session, draft_id: int) -> dict[str, Any]:
+    context = _delivery_context(request, session, draft_id)
+    detail = context["draft"]
     try:
         campaign = get_campaign(session, detail.campaign_id)
     except CampaignNotFoundError:  # pragma: no cover - guarded by foreign keys
@@ -110,20 +125,12 @@ def _review_context(request: Request, session: Session, draft_id: int) -> dict[s
         offset=0,
         saved_prospect_id=detail.saved_prospect_id,
     )
-    return {
-        "draft": detail,
+    return context | {
         "campaign": campaign,
         "prospect": prospect,
         "revisions": [to_draft_record(row) for row in revisions],
-        "actions": presentation.draft_actions(detail),
-        "mode": presentation.delivery_mode(settings, request.app.state.email_provider),
-        "sender": settings.email_sender,
-        "stale_minutes": int(STALE_SENDING_AFTER.total_seconds() // 60),
         "approve_form": {"recipient_email": ""},
         "approve_errors": {},
-        "send_errors": {},
-        "resolve_form": {"delivered": "", "note": ""},
-        "resolve_errors": {},
         "error": None,
     }
 
@@ -159,16 +166,10 @@ def draft_delivery_panel(
     if not wants_fragment(request, "delivery-panel"):
         return redirect(f"/ui/drafts/{draft_id}")
     try:
-        context = _review_context(request, session, draft_id)
+        context = _delivery_context(request, session, draft_id)
     except DraftNotFoundError as exc:
         return render_error_page(request, 404, "draft_not_found", str(exc))
     return render(request, "drafts/_delivery_panel.html", context)
-
-
-def _domain_error(exc: Exception) -> tuple[str, int]:
-    if isinstance(exc, EmailDeliveryError):
-        return exc.code, exc.http_status
-    return DRAFT_ERRORS[type(exc)]
 
 
 @router.post("/drafts/{draft_id}/approve")
@@ -212,7 +213,7 @@ async def approve_action(
                 actor=settings_of(request).approval_actor,
             )
         except tuple(DRAFT_ERRORS) as exc:
-            code, status_code = _domain_error(exc)
+            code, status_code = draft_error(exc)
             if code == "draft_not_found":
                 return render_error_page(request, 404, code, str(exc))
             return _review_page(
@@ -274,7 +275,7 @@ async def send_action(
                 request, session, draft_id, status_code=exc.cause.http_status, error=message
             )
         except (*tuple(DRAFT_ERRORS), EmailDeliveryError) as exc:
-            code, status_code = _domain_error(exc)
+            code, status_code = draft_error(exc)
             if code == "draft_not_found":
                 return render_error_page(request, 404, code, str(exc))
             return _review_page(request, session, draft_id, status_code=status_code, error=str(exc))
@@ -319,7 +320,7 @@ async def resolve_action(
         try:
             resolve_delivery(session, draft_id, delivered=payload.delivered, note=payload.note)
         except tuple(DRAFT_ERRORS) as exc:
-            code, status_code = _domain_error(exc)
+            code, status_code = draft_error(exc)
             if code == "draft_not_found":
                 return render_error_page(request, 404, code, str(exc))
             return _review_page(

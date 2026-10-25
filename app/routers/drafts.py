@@ -71,10 +71,22 @@ _NOT_FOUND = {404: {"description": "Unknown draft (error envelope)."}}
 _VALIDATION = {422: {"description": "Request validation failed (error envelope)."}}
 
 
-def _app_error(exc: Exception) -> AppError:
+def draft_error(exc: Exception) -> tuple[str, int]:
+    """Stable code and HTTP status for a draft or delivery exception.
+
+    Walks the class hierarchy, so subclasses of a mapped exception get the
+    same code instead of failing the lookup.
+    """
     if isinstance(exc, EmailDeliveryError):
-        return AppError(str(exc), code=exc.code, status_code=exc.http_status)
-    code, status_code = DRAFT_ERRORS[type(exc)]
+        return exc.code, exc.http_status
+    for cls in type(exc).__mro__:
+        if cls in DRAFT_ERRORS:
+            return DRAFT_ERRORS[cls]
+    raise KeyError(type(exc).__name__)
+
+
+def _app_error(exc: Exception) -> AppError:
+    code, status_code = draft_error(exc)
     return AppError(str(exc), code=code, status_code=status_code)
 
 

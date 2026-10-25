@@ -670,7 +670,7 @@ standalone executable, which needs no Node.js:
    `tools/tailwind/`. That folder is git-ignored. Optionally check it
    against the release's `sha256sums.txt`.
 2. Run `python -m scripts.build_css`, or `python -m scripts.build_css
-   --watch` while editing. You can also point `TAILWIND_BIN` at the
+   --watch` while editing. You can also pass `--tailwind PATH` to use the
    executable.
 3. Commit the updated `app/static/css/app.css`.
 

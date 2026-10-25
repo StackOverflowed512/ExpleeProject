@@ -238,6 +238,9 @@ NOTICES: dict[str, StatusView] = {
         "Fresh research already existed, so nothing was fetched. Use Refresh to fetch again.",
         "info",
     ),
+    "research_done": StatusView(
+        "Website research finished. See the latest attempt below.", "info"
+    ),
     "qualified": StatusView("Qualification recorded.", "success"),
     "prospect_saved": StatusView("Saved as a prospect.", "success"),
     "prospect_exists": StatusView("This company was already saved; nothing changed.", "info"),
@@ -271,3 +274,11 @@ NOTICES: dict[str, StatusView] = {
 
 def notice_for(code: str | None) -> StatusView | None:
     return NOTICES.get(code) if code else None
+
+
+def research_notice(outcome: str, *, reused: bool) -> str:
+    """Notice code after a research request; unknown outcomes get a generic one."""
+    if reused:
+        return "research_reused"
+    code = f"research_{outcome}"
+    return code if code in NOTICES else "research_done"

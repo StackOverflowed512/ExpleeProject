@@ -334,3 +334,47 @@ def test_static_assets_are_present() -> None:
         assert component in css
     htmx = (STATIC_DIR / "vendor" / "htmx.min.js").read_text(encoding="utf-8")
     assert 'version:"2.0.10"' in htmx
+
+
+# -- PR #11 review follow-ups ---------------------------------------------------------------
+def test_research_notice_falls_back_for_unknown_outcomes() -> None:
+    assert presentation.research_notice("success", reused=False) == "research_success"
+    assert presentation.research_notice("failed", reused=False) == "research_failed"
+    assert presentation.research_notice("success", reused=True) == "research_reused"
+    assert presentation.research_notice("blocked", reused=False) == "research_done"
+    assert redirect("/ui/companies/1", notice="research_done").status_code == 303
+
+
+def test_draft_errors_resolve_subclasses() -> None:
+    from app.routers.drafts import draft_error
+    from app.services.delivery import DraftNotApprovedError
+    from app.services.providers.email import EmailTimeoutError
+
+    class StaleApprovalError(DraftNotApprovedError):
+        pass
+
+    assert draft_error(StaleApprovalError("x")) == ("draft_not_approved", 409)
+    assert draft_error(DraftNotApprovedError("x")) == ("draft_not_approved", 409)
+    assert draft_error(EmailTimeoutError("x")) == ("email_timeout", 504)
+    with pytest.raises(KeyError):
+        draft_error(RuntimeError("x"))
+
+
+def test_build_css_takes_the_executable_as_an_option(capsys: pytest.CaptureFixture[str]) -> None:
+    from scripts import build_css
+
+    assert build_css.main(["--tailwind", "does-not-exist.exe"]) == 1
+    assert "--tailwind PATH" in capsys.readouterr().err
+    assert build_css._executable("custom/tailwindcss") == build_css.Path("custom/tailwindcss")
+
+
+def test_fragment_target_accepts_only_safe_ids() -> None:
+    from app.web.rendering import fragment_target
+
+    def req(**headers: str) -> Request:
+        return _request(headers={"hx-request": "true"} | headers)
+
+    assert fragment_target(req(**{"hx-target": "delivery-panel"})) == "delivery-panel"
+    assert fragment_target(req(**{"hx-target": "x\" onload=\"1"})) is None
+    assert fragment_target(req(**{"hx-target": "a", "hx-boosted": "true"})) is None
+    assert fragment_target(_request(headers={"hx-target": "a"})) is None

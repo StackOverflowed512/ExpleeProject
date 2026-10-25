@@ -1025,7 +1025,7 @@ Tailwind v4 is configured CSS-first in `app/static/src/app.css`: no
 JavaScript config, and `@source` points at `app/templates`. Component
 classes (`btn`, `badge-*`, `alert-*`, `card`, `input`) keep templates
 readable. `python -m scripts.build_css` runs the Tailwind standalone CLI
-from `tools/tailwind/` or `TAILWIND_BIN`; it never downloads anything. The
+from `tools/tailwind/` (or `--tailwind PATH`); it never downloads anything. The
 compiled `app/static/css/app.css` is committed, so the CLI is needed only
 after changing templates or styles. Status is never shown by color alone:
 every badge and banner has a text label.
