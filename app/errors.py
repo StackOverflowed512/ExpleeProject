@@ -8,17 +8,22 @@ Domain code raises :class:`AppError` (or a future subclass) with a stable
 ``code``; handlers registered by :func:`register_exception_handlers` turn it
 into the envelope. Unhandled exceptions are logged and returned as a generic
 500 without leaking internal details.
+
+Requests under ``/ui`` (the server-rendered web interface) get an HTML error
+page instead, through the renderer the application stores on
+``app.state.html_error_renderer``. API responses are unchanged.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.schemas.errors import ErrorDetail, ErrorResponse
@@ -35,6 +40,17 @@ _HTTP_ERROR_CODES: dict[int, str] = {
     422: "validation_error",
     500: "internal_error",
 }
+
+
+HtmlErrorRenderer = Callable[[Request, int, str, str, BaseException | None], Response]
+_HTML_PREFIX = "/ui"
+
+
+def _html_renderer(request: Request) -> HtmlErrorRenderer | None:
+    path = request.url.path
+    if path != _HTML_PREFIX and not path.startswith(_HTML_PREFIX + "/"):
+        return None
+    return getattr(request.app.state, "html_error_renderer", None)
 
 
 class AppError(Exception):
@@ -72,7 +88,7 @@ def _error_response(
     )
 
 
-async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+async def _handle_app_error(request: Request, exc: AppError) -> Response:
     logger.warning(
         "Application error on %s %s [%s]: %s",
         request.method,
@@ -80,17 +96,23 @@ async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         exc.code,
         exc.message,
     )
+    renderer = _html_renderer(request)
+    if renderer is not None:
+        return renderer(request, exc.status_code, exc.code, exc.message, None)
     return _error_response(exc.status_code, exc.code, exc.message, exc.details)
 
 
 async def _handle_http_exception(
     request: Request, exc: StarletteHTTPException
-) -> JSONResponse:
+) -> Response:
     code = _HTTP_ERROR_CODES.get(exc.status_code, "http_error")
     if isinstance(exc.detail, str):
         message, details = exc.detail, None
     else:
         message, details = "Request failed.", jsonable_encoder(exc.detail)
+    renderer = _html_renderer(request)
+    if renderer is not None:
+        return renderer(request, exc.status_code, code, message, None)
     return _error_response(
         exc.status_code,
         code,
@@ -102,7 +124,16 @@ async def _handle_http_exception(
 
 async def _handle_validation_error(
     request: Request, exc: RequestValidationError
-) -> JSONResponse:
+) -> Response:
+    renderer = _html_renderer(request)
+    if renderer is not None:
+        return renderer(
+            request,
+            422,
+            "validation_error",
+            "The address contains a value that is not valid.",
+            None,
+        )
     return _error_response(
         422,
         "validation_error",
@@ -113,10 +144,15 @@ async def _handle_validation_error(
 
 async def _handle_unexpected_error(
     request: Request, exc: Exception
-) -> JSONResponse:
+) -> Response:
     logger.exception(
         "Unhandled error on %s %s", request.method, request.url.path
     )
+    renderer = _html_renderer(request)
+    if renderer is not None:
+        return renderer(
+            request, 500, "internal_error", "An unexpected error occurred.", exc
+        )
     return _error_response(
         500,
         "internal_error",

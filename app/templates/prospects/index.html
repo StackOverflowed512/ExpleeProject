@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header, field_error with context %}
+{% block title %}Saved prospects{% endblock %}
+{% block content %}
+  {{ page_header("Saved prospects", "Companies saved from a qualified run. Scores and statuses come from the stored qualification.") }}
+
+  <form method="get" action="/ui/prospects" class="card grid gap-4 p-5 md:grid-cols-6 md:items-end" role="search"
+        hx-get="/ui/prospects" hx-target="#prospect-results" hx-swap="outerHTML" hx-push-url="true"
+        hx-trigger="submit, change from:select" hx-indicator="#filter-busy">
+    <div class="md:col-span-2">
+      <label for="q" class="label">Search</label>
+      <input id="q" name="q" type="search" value="{{ filters.q }}" class="input" placeholder="Name, domain, or description" maxlength="100"{% if errors.get("q") %} aria-invalid="true" aria-describedby="q-error"{% endif %}>
+      {{ field_error(errors, "q") }}
+    </div>
+    <div>
+      <label for="domain" class="label">Exact domain</label>
+      <input id="domain" name="domain" value="{{ filters.domain }}" class="input" placeholder="acme.com" maxlength="255"{% if errors.get("domain") %} aria-invalid="true" aria-describedby="domain-error"{% endif %}>
+      {{ field_error(errors, "domain") }}
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <div>
+        <label for="min_score" class="label">Min score</label>
+        <input id="min_score" name="min_score" type="number" min="0" max="100" value="{{ filters.min_score }}" class="input">
+      </div>
+      <div>
+        <label for="max_score" class="label">Max score</label>
+        <input id="max_score" name="max_score" type="number" min="0" max="100" value="{{ filters.max_score }}" class="input">
+      </div>
+    </div>
+    <div>
+      <label for="sort" class="label">Sort by</label>
+      <select id="sort" name="sort" class="input">
+        {% for value, label in sort_options %}
+          <option value="{{ value }}" {% if filters.sort == value or (not filters.sort and value == "saved_at_desc") %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="flex items-center gap-3">
+      <button type="submit" class="btn btn-primary">Apply</button>
+      <a class="link text-sm" href="/ui/prospects">Reset</a>
+      <span id="filter-busy" class="htmx-indicator text-sm text-slate-600" role="status">Loading…</span>
+    </div>
+    <div class="grid grid-cols-2 gap-2 md:col-span-3">
+      <div>
+        <label for="saved_after" class="label">Saved on or after</label>
+        <input id="saved_after" name="saved_after" type="date" value="{{ filters.saved_after }}" class="input">
+        {{ field_error(errors, "saved_after") }}
+      </div>
+      <div>
+        <label for="saved_before" class="label">Saved before</label>
+        <input id="saved_before" name="saved_before" type="date" value="{{ filters.saved_before }}" class="input">
+        {{ field_error(errors, "saved_before") }}
+      </div>
+    </div>
+  </form>
+
+  {% include "prospects/_results.html" %}
+{% endblock %}

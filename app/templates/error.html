@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header with context %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+  {{ page_header(title) }}
+  <div class="card p-6">
+    <div class="alert alert-{{ 'warning' if status_code < 500 else 'danger' }}" role="alert">
+      <p class="font-semibold">{{ message }}</p>
+      <p class="mt-1 text-xs">Status {{ status_code }} · <code>{{ code }}</code></p>
+    </div>
+    {% if code == "csrf_failed" %}
+      <p class="mt-4 text-sm text-slate-700">Nothing was changed. Reload the page you came from and submit the form again.</p>
+    {% elif code == "database_unavailable" %}
+      <p class="mt-4 text-sm text-slate-700">See <a class="link" href="/ui/system">System status</a> for the database and migration state.</p>
+    {% endif %}
+    <div class="mt-6 flex flex-wrap gap-2">
+      <a class="btn btn-secondary" href="/ui/explorer">Go to Explorer</a>
+      <a class="btn btn-secondary" href="/ui/drafts">Go to Draft review</a>
+    </div>
+  </div>
+{% endblock %}

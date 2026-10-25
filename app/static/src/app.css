@@ -1,0 +1,268 @@
+/*
+ * Tailwind CSS source for the Explee web interface.
+ *
+ * Compiled with the Tailwind standalone CLI (no Node.js) into
+ * app/static/css/app.css, which is committed. Rebuild after changing
+ * templates or this file:  python scripts/build_css.py
+ */
+@import "tailwindcss" source(none);
+@source "../../templates";
+
+@layer base {
+  html {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-indigo-600);
+    outline-offset: 2px;
+  }
+  code {
+    @apply rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.8em] text-slate-800;
+  }
+  blockquote {
+    @apply border-l-2 border-slate-300 pl-3 text-slate-700;
+  }
+}
+
+@layer components {
+  .skip-link {
+    @apply sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-white focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:shadow;
+  }
+  .sidebar {
+    @apply flex flex-col border-b border-slate-200 bg-white lg:sticky lg:top-0 lg:h-screen lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-r;
+  }
+  .sidebar-footer {
+    @apply mt-auto hidden border-t border-slate-200 px-5 py-4 text-xs leading-relaxed text-slate-600 lg:block;
+  }
+  .brand {
+    @apply flex items-center gap-2 text-lg font-semibold tracking-tight text-slate-900;
+  }
+  .brand-mark {
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white;
+  }
+  /* Small screens: one compact, wrapping row of links. Large: a sidebar. */
+  .nav {
+    @apply flex flex-wrap gap-1 px-2 pb-3 lg:block lg:px-3 lg:pb-4;
+  }
+  .nav-group {
+    @apply contents lg:block lg:space-y-0.5;
+  }
+  .nav-heading {
+    @apply hidden px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 lg:block;
+  }
+  .nav-link {
+    @apply flex items-center justify-between gap-2 rounded-md px-3 py-1.5 text-sm font-medium text-slate-700 ring-1 ring-inset ring-slate-200 hover:bg-slate-100 hover:text-slate-900 lg:py-2 lg:ring-0;
+  }
+  .nav-link-active {
+    @apply bg-indigo-50 text-indigo-800 hover:bg-indigo-50;
+  }
+  .nav-count {
+    @apply inline-flex min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-xs font-semibold text-white;
+  }
+  .topbar {
+    @apply flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 sm:px-6 lg:px-8;
+  }
+  .mode-chip {
+    @apply inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset;
+  }
+  .mode-chip-safe {
+    @apply bg-slate-50 text-slate-700 ring-slate-300;
+  }
+  .mode-chip-live {
+    @apply bg-amber-50 text-amber-900 ring-amber-400;
+  }
+  .loading-chip {
+    @apply rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-800;
+  }
+  .page {
+    @apply mx-auto w-full max-w-7xl flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8;
+  }
+  .page-header {
+    @apply mb-6 flex flex-wrap items-end justify-between gap-4;
+  }
+  .page-title {
+    @apply text-2xl font-semibold tracking-tight text-slate-900;
+  }
+  .page-subtitle {
+    @apply mt-1 max-w-3xl text-sm text-slate-600;
+  }
+  .breadcrumb {
+    @apply mb-2 text-sm text-slate-600;
+  }
+  .section-title {
+    @apply flex items-center gap-2 text-base font-semibold text-slate-900;
+  }
+  .subsection-title {
+    @apply text-sm font-semibold text-slate-900;
+  }
+  .section-help {
+    @apply mt-1 text-sm text-slate-600;
+  }
+  .step {
+    @apply inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white;
+  }
+  .card {
+    @apply rounded-lg bg-white shadow-sm ring-1 ring-slate-200;
+  }
+  .link {
+    @apply font-medium text-indigo-700 underline decoration-indigo-300 underline-offset-2 hover:text-indigo-900 hover:decoration-indigo-600;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-semibold shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply bg-indigo-600 text-white hover:bg-indigo-500;
+  }
+  .btn-secondary {
+    @apply bg-white text-slate-900 ring-1 ring-inset ring-slate-300 hover:bg-slate-50;
+  }
+  .btn-danger {
+    @apply bg-red-700 text-white hover:bg-red-600;
+  }
+  .label {
+    @apply block text-sm font-medium text-slate-800;
+  }
+  .input {
+    @apply mt-1 block w-full rounded-md border-0 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm ring-1 ring-inset ring-slate-300 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-600;
+  }
+  .input-invalid {
+    @apply ring-2 ring-red-600;
+  }
+  .checkbox {
+    @apply mt-0.5 h-4 w-4 shrink-0 accent-indigo-600;
+  }
+  .choice {
+    @apply flex items-start gap-3 rounded-md p-2 text-sm text-slate-800 hover:bg-slate-50;
+  }
+  .help {
+    @apply mt-1 text-xs text-slate-600;
+  }
+  .field-error {
+    @apply mt-1 text-sm font-medium text-red-700;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset;
+  }
+  .badge-neutral {
+    @apply bg-slate-100 text-slate-700 ring-slate-300;
+  }
+  .badge-info {
+    @apply bg-sky-50 text-sky-800 ring-sky-300;
+  }
+  .badge-success {
+    @apply bg-emerald-50 text-emerald-800 ring-emerald-300;
+  }
+  .badge-warning {
+    @apply bg-amber-50 text-amber-900 ring-amber-300;
+  }
+  .badge-danger {
+    @apply bg-red-50 text-red-800 ring-red-300;
+  }
+  .alert {
+    @apply mb-4 rounded-md p-4 text-sm ring-1 ring-inset;
+  }
+  .alert-neutral {
+    @apply bg-slate-50 text-slate-800 ring-slate-200;
+  }
+  .alert-info {
+    @apply bg-sky-50 text-sky-900 ring-sky-200;
+  }
+  .alert-success {
+    @apply bg-emerald-50 text-emerald-900 ring-emerald-200;
+  }
+  .alert-warning {
+    @apply bg-amber-50 text-amber-900 ring-amber-300;
+  }
+  .alert-danger {
+    @apply bg-red-50 text-red-900 ring-red-300;
+  }
+  .mode-box {
+    @apply rounded-md p-3 ring-1 ring-inset;
+  }
+  .mode-box-safe {
+    @apply bg-slate-50 text-slate-800 ring-slate-200;
+  }
+  .mode-box-live {
+    @apply bg-amber-50 text-amber-950 ring-amber-300;
+  }
+  .send-box {
+    @apply rounded-md bg-red-50/50 p-4 ring-1 ring-inset ring-red-200;
+  }
+  .message-body {
+    @apply whitespace-pre-wrap break-words rounded-md bg-slate-50 p-4 font-sans text-sm leading-relaxed text-slate-900 ring-1 ring-inset ring-slate-200;
+  }
+  .prose-pre {
+    @apply mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-50 p-3 text-xs text-slate-800 ring-1 ring-inset ring-slate-200;
+  }
+  .dl {
+    @apply divide-y divide-slate-100;
+  }
+  .dl-row {
+    @apply grid gap-1 py-2 text-sm sm:grid-cols-3 sm:gap-4;
+  }
+  .dl-row dt {
+    @apply font-medium text-slate-600;
+  }
+  .dl-row dd {
+    @apply min-w-0 break-words text-slate-900 sm:col-span-2;
+  }
+  .table {
+    @apply min-w-full divide-y divide-slate-200 text-left text-sm;
+  }
+  .table th {
+    @apply whitespace-nowrap px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-600;
+  }
+  .table td {
+    @apply px-4 py-3 align-top text-slate-800;
+  }
+  .table tbody tr {
+    @apply border-t border-slate-100 hover:bg-slate-50;
+  }
+  .empty-state {
+    @apply rounded-lg border border-dashed border-slate-300 bg-white px-6 py-10 text-center;
+  }
+  .pagination {
+    @apply mt-4 flex flex-wrap items-center justify-between gap-3;
+  }
+  .tabs {
+    @apply flex flex-wrap gap-1 border-b border-slate-200;
+  }
+  .tab {
+    @apply -mb-px inline-flex items-center gap-2 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-600 hover:border-slate-300 hover:text-slate-900;
+  }
+  .tab-active {
+    @apply border-indigo-600 text-indigo-800 hover:border-indigo-600;
+  }
+  .disclosure > summary {
+    @apply cursor-pointer text-sm font-semibold text-slate-800;
+  }
+  .factor {
+    @apply rounded-md p-3 ring-1 ring-inset ring-slate-200;
+  }
+  .evidence {
+    @apply rounded-md bg-slate-50 p-2;
+  }
+  .attempt {
+    @apply rounded-md p-3 ring-1 ring-inset ring-slate-200;
+  }
+}
+
+/* HTMX request feedback (htmx's own inline indicator styles are disabled by CSP). */
+.htmx-indicator {
+  visibility: hidden;
+}
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  visibility: visible;
+}
+.when-busy {
+  display: none;
+}
+.htmx-request .when-busy,
+form.htmx-request .when-busy {
+  display: inline;
+}
+.htmx-request .when-idle,
+form.htmx-request .when-idle {
+  display: none;
+}

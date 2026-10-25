@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header, text_field, csrf_input, empty_state, pagination, submit, form_errors with context %}
+{% block title %}Explorer{% endblock %}
+{% block content %}
+  {{ page_header("Explorer", "Discover companies, research their websites, and qualify them against your target market.") }}
+
+  <section class="card p-5" aria-labelledby="search-heading">
+    <h2 id="search-heading" class="section-title">Discover companies</h2>
+    <p class="section-help">
+      Searches with the configured provider (<code>{{ search_provider }}</code>). Results are stored as candidates with their source; nothing is researched or qualified automatically.
+    </p>
+    {% if search_provider == "fake" %}
+      <p class="help mt-2">The <code>fake</code> provider returns no results. Set <code>SEARCH_PROVIDER=tavily</code> and <code>TAVILY_API_KEY</code> in <code>.env</code> for real searches.</p>
+    {% endif %}
+    <form method="post" action="/ui/explorer/search" class="mt-4 grid gap-4 sm:grid-cols-[1fr_8rem_auto] sm:items-end"
+          hx-post="/ui/explorer/search" hx-target="#search-results" hx-swap="outerHTML" hx-indicator="#search-busy">
+      {{ csrf_input() }}
+      {{ text_field("query", "Search query", form.query, errors, required=True, help="2–300 characters, for example “B2B SaaS logistics companies in Berlin”.", attrs='minlength="2" maxlength="300" autocomplete="off"') }}
+      {{ text_field("limit", "Max results", form.limit, errors, type="number", attrs='min="1" max="10"') }}
+      <div class="flex items-center gap-3">
+        {{ submit("Search", busy="Searching…") }}
+        <span id="search-busy" class="htmx-indicator text-sm text-slate-600" role="status">Searching…</span>
+      </div>
+    </form>
+  </section>
+
+  {% include "explorer/_results.html" %}
+
+  <section class="mt-8" aria-labelledby="recent-heading">
+    <h2 id="recent-heading" class="section-title">Discovered companies</h2>
+    {% if recent %}
+      <div class="card mt-3 overflow-x-auto">
+        <table class="table">
+          <caption class="sr-only">Discovered companies, newest first</caption>
+          <thead><tr><th scope="col">Company</th><th scope="col">Domain</th><th scope="col">Source</th><th scope="col">Discovered</th></tr></thead>
+          <tbody>
+            {% for c in recent %}
+              <tr>
+                <td><a class="link font-medium" href="/ui/companies/{{ c.id }}">{{ c.name }}</a></td>
+                <td>{{ c.domain or "—" }}</td>
+                <td><code>{{ c.provider }}</code></td>
+                <td><time datetime="{{ c.discovered_at.isoformat() }}">{{ c.discovered_at | dt }}</time></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {{ pagination(pages, "/ui/explorer") }}
+    {% else %}
+      {% call empty_state("No companies discovered yet", "Run a search above. Discovered companies appear here and stay available later.") %}{% endcall %}
+    {% endif %}
+  </section>
+{% endblock %}

@@ -52,13 +52,16 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.models.campaign import Campaign
+from app.models.company_candidate import CompanyCandidate
 from app.models.draft_approval import DraftApproval
 from app.models.email_send_attempt import EmailSendAttempt
 from app.models.outreach_draft import OutreachDraft
+from app.models.saved_prospect import SavedProspect
 from app.schemas.drafts import (
     ApprovalRecord,
     DraftDetail,
@@ -571,3 +574,58 @@ def draft_detail(session: Session, draft: OutreachDraft) -> DraftDetail:
             for attempt in send_attempts(session, draft.id)
         ],
     )
+
+
+@dataclass(frozen=True)
+class AttemptOverview:
+    """A send attempt with the draft and campaign it belongs to."""
+
+    attempt: SendAttemptRecord
+    draft_revision: int
+    campaign_id: int
+    campaign_name: str
+    prospect_name: str
+
+
+def list_attempts_overview(
+    session: Session,
+    *,
+    outcome: str | None,
+    mode: str | None,
+    limit: int,
+    offset: int = 0,
+) -> tuple[int, list[AttemptOverview]]:
+    """Every audited attempt across drafts, newest first (read-only).
+
+    Recipients are deliberately not included; they are shown on the draft page.
+    """
+    stmt = (
+        select(
+            EmailSendAttempt,
+            OutreachDraft.revision,
+            OutreachDraft.campaign_id,
+            Campaign.name,
+            CompanyCandidate.name,
+        )
+        .join(OutreachDraft, OutreachDraft.id == EmailSendAttempt.draft_id)
+        .join(Campaign, Campaign.id == OutreachDraft.campaign_id)
+        .join(SavedProspect, SavedProspect.id == OutreachDraft.saved_prospect_id)
+        .join(CompanyCandidate, CompanyCandidate.id == SavedProspect.candidate_id)
+    )
+    if outcome is not None:
+        stmt = stmt.where(EmailSendAttempt.outcome == outcome)
+    if mode is not None:
+        stmt = stmt.where(EmailSendAttempt.mode == mode)
+    total = session.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    page = stmt.order_by(EmailSendAttempt.started_at.desc(), EmailSendAttempt.id.desc())
+    rows = session.execute(page.limit(limit).offset(offset)).tuples()
+    return total, [
+        AttemptOverview(
+            SendAttemptRecord.model_validate(attempt, from_attributes=True),
+            revision,
+            campaign_id,
+            campaign_name,
+            prospect_name,
+        )
+        for attempt, revision, campaign_id, campaign_name, prospect_name in rows
+    ]

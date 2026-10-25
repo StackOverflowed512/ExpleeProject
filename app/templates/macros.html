@@ -1,0 +1,130 @@
+{# Reusable UI building blocks. Every status uses a text label; color is only
+   an extra cue. #}
+
+{% macro nav_link(href, label, active, count=None) %}
+  <li>
+    <a href="{{ href }}" class="nav-link {{ 'nav-link-active' if active else '' }}"{% if active %} aria-current="page"{% endif %}>
+      <span>{{ label }}</span>
+      {% if count %}
+        <span class="nav-count" title="Drafts whose delivery needs attention">{{ count }}<span class="sr-only"> need attention</span></span>
+      {% endif %}
+    </a>
+  </li>
+{% endmacro %}
+
+{% macro badge(kind, value) %}
+  {% set s = status_view(kind, value) %}
+  <span class="badge badge-{{ s.tone }}"{% if s.hint %} title="{{ s.hint }}"{% endif %}>{{ s.label }}</span>
+{% endmacro %}
+
+{% macro alert(tone, message, title=None, role=None) %}
+  <div class="alert alert-{{ tone }}" role="{{ role or ('alert' if tone in ('danger', 'warning') else 'status') }}">
+    {% if title %}<p class="font-semibold">{{ title }}</p>{% endif %}
+    <p>{{ message }}</p>
+    {% if caller is defined %}{{ caller() }}{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro page_header(title, subtitle=None) %}
+  <div class="page-header">
+    <div class="min-w-0">
+      <h1 class="page-title">{{ title }}</h1>
+      {% if subtitle %}<p class="page-subtitle">{{ subtitle }}</p>{% endif %}
+    </div>
+    {% if caller is defined %}<div class="flex flex-wrap gap-2">{{ caller() }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro csrf_input() %}
+  <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+{% endmacro %}
+
+{% macro field_error(errors, name) %}
+  {% if errors.get(name) %}
+    <p class="field-error" id="{{ name }}-error">{{ errors.get(name) }}</p>
+  {% endif %}
+{% endmacro %}
+
+{% macro form_errors(errors) %}
+  {% if errors %}
+    <div class="alert alert-danger" role="alert">
+      <p class="font-semibold">Please correct the highlighted fields.</p>
+      {% if errors.get("__all__") %}<p>{{ errors.get("__all__") }}</p>{% endif %}
+    </div>
+  {% endif %}
+{% endmacro %}
+
+{% macro text_field(name, label, value, errors, type="text", help=None, required=False, attrs="") %}
+  <div>
+    <label for="{{ name }}" class="label">{{ label }}{% if required %} <span class="text-red-700" aria-hidden="true">*</span>{% endif %}</label>
+    <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}"
+           class="input {{ 'input-invalid' if errors.get(name) else '' }}"
+           {% if required %}required{% endif %}
+           {% if errors.get(name) %}aria-invalid="true" aria-describedby="{{ name }}-error"{% elif help %}aria-describedby="{{ name }}-help"{% endif %}
+           {{ attrs }}>
+    {% if help %}<p class="help" id="{{ name }}-help">{{ help }}</p>{% endif %}
+    {{ field_error(errors, name) }}
+  </div>
+{% endmacro %}
+
+{% macro textarea_field(name, label, value, errors, rows=3, help=None, required=False) %}
+  <div>
+    <label for="{{ name }}" class="label">{{ label }}{% if required %} <span class="text-red-700" aria-hidden="true">*</span>{% endif %}</label>
+    <textarea id="{{ name }}" name="{{ name }}" rows="{{ rows }}"
+              class="input {{ 'input-invalid' if errors.get(name) else '' }}"
+              {% if required %}required{% endif %}
+              {% if errors.get(name) %}aria-invalid="true" aria-describedby="{{ name }}-error"{% elif help %}aria-describedby="{{ name }}-help"{% endif %}>{{ value }}</textarea>
+    {% if help %}<p class="help" id="{{ name }}-help">{{ help }}</p>{% endif %}
+    {{ field_error(errors, name) }}
+  </div>
+{% endmacro %}
+
+{% macro empty_state(title, message) %}
+  <div class="empty-state">
+    <p class="font-semibold text-slate-800">{{ title }}</p>
+    <p class="mt-1 text-sm text-slate-600">{{ message }}</p>
+    {% if caller is defined %}<div class="mt-4">{{ caller() }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro pagination(pages, base, extra="") %}
+  {% if pages.total > pages.limit %}
+    <nav class="pagination" aria-label="Pagination">
+      <p class="text-sm text-slate-600">Showing {{ pages.first }}–{{ pages.last }} of {{ pages.total }}</p>
+      <div class="flex gap-2">
+        {% if pages.prev is not none %}
+          <a class="btn btn-secondary" href="{{ base }}?offset={{ pages.prev }}{{ extra }}">Previous</a>
+        {% endif %}
+        {% if pages.next is not none %}
+          <a class="btn btn-secondary" href="{{ base }}?offset={{ pages.next }}{{ extra }}">Next</a>
+        {% endif %}
+      </div>
+    </nav>
+  {% elif pages.total %}
+    <p class="mt-3 text-sm text-slate-600">{{ pages.total }} total</p>
+  {% endif %}
+{% endmacro %}
+
+{% macro external_link(url, label=None) %}
+  {% if url and (url.startswith("https://") or url.startswith("http://")) %}
+    <a href="{{ url }}" class="link break-all" rel="noopener noreferrer nofollow" target="_blank">{{ label or url }}<span class="sr-only"> (opens in a new tab)</span></a>
+  {% elif url %}
+    <span class="break-all">{{ url }}</span>
+  {% else %}
+    <span class="text-slate-400">—</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro dl_row(term, value=None) %}
+  <div class="dl-row">
+    <dt>{{ term }}</dt>
+    <dd>{% if caller is defined %}{{ caller() }}{% elif value is none or value == "" %}<span class="text-slate-400">—</span>{% else %}{{ value }}{% endif %}</dd>
+  </div>
+{% endmacro %}
+
+{% macro submit(label, kind="primary", busy="Working…") %}
+  <button type="submit" class="btn btn-{{ kind }}">
+    <span class="when-idle">{{ label }}</span>
+    <span class="when-busy" aria-hidden="true">{{ busy }}</span>
+  </button>
+{% endmacro %}

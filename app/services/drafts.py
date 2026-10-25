@@ -38,7 +38,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.campaign import Campaign, CampaignProspect
+from app.models.company_candidate import CompanyCandidate
 from app.models.outreach_draft import OutreachDraft
+from app.models.saved_prospect import SavedProspect
 from app.schemas.drafts import DraftRecord, GenerationOutcome
 from app.schemas.research import EnrichedCompany
 from app.services.campaigns import CampaignProspectRow, campaign_prospect_rows, get_campaign
@@ -491,3 +493,48 @@ def get_draft(session: Session, draft_id: int) -> OutreachDraft:
 
 def to_draft_record(draft: OutreachDraft) -> DraftRecord:
     return DraftRecord.model_validate(draft, from_attributes=True)
+
+
+@dataclass(frozen=True)
+class DraftOverview:
+    """A draft with the names needed to list it outside its campaign."""
+
+    draft: DraftRecord
+    campaign_name: str
+    prospect_name: str
+
+
+def _overview_query(states: tuple[str, ...] | None) -> Select[Any]:
+    stmt = (
+        select(OutreachDraft, Campaign.name, CompanyCandidate.name)
+        .join(Campaign, Campaign.id == OutreachDraft.campaign_id)
+        .join(SavedProspect, SavedProspect.id == OutreachDraft.saved_prospect_id)
+        .join(CompanyCandidate, CompanyCandidate.id == SavedProspect.candidate_id)
+    )
+    if states:
+        stmt = stmt.where(OutreachDraft.state.in_(states))
+    return stmt
+
+
+def list_drafts_overview(
+    session: Session,
+    *,
+    states: tuple[str, ...] | None,
+    limit: int,
+    offset: int = 0,
+) -> tuple[int, list[DraftOverview]]:
+    """Drafts across campaigns, most recently updated first (read-only)."""
+    stmt = _overview_query(states)
+    total = session.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    page = stmt.order_by(OutreachDraft.updated_at.desc(), OutreachDraft.id.desc())
+    rows = session.execute(page.limit(limit).offset(offset)).tuples()
+    return total, [
+        DraftOverview(to_draft_record(draft), campaign_name, prospect_name)
+        for draft, campaign_name, prospect_name in rows
+    ]
+
+
+def count_drafts_by_state(session: Session, states: tuple[str, ...]) -> int:
+    return session.execute(
+        select(func.count()).select_from(OutreachDraft).where(OutreachDraft.state.in_(states))
+    ).scalar_one()

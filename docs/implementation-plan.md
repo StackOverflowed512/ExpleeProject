@@ -649,11 +649,105 @@ provider protocol and one real adapter; send audit trail; dry-run path.
 **Scope:** Jinja2 templates and HTMX interactions for Explorer and Outreach;
 server-rendered pages calling existing services.
 
+**Implementation notes**
+
+- **Where it lives.** The interface is served by the same app under `/ui`.
+  Routes are in `app/routers/ui/`, infrastructure in `app/web/`, templates
+  in `app/templates/` and assets in `app/static/`. The JSON API contracts
+  are unchanged. See *Web interface (P6)* in `docs/architecture.md`.
+- **Pages:**
+  - Explorer: discovery search, recent candidates, and a company page with
+    provenance, research and refresh, qualification with criteria and
+    evidence, and save.
+  - Saved prospects: filters and detail.
+  - Campaigns: list, create and detail, with explicit draft generation.
+  - Draft review: a queue by state, and a review page with the message,
+    provenance, approval, delivery, recovery and attempt history.
+  - Delivery history, with filters.
+  - System status: configuration and migration state, with no secrets.
+- **Same backend workflows.** Routes call the existing services; templates
+  hold no business rules. Display hints in `app/web/presentation.py` reuse
+  `approvals.approval_matches`, and every action is re-checked by the
+  services.
+- **Approval and sending stay separate.**
+  - Approve, send and resolve are separate `POST` requests, each with an
+    explicit confirmation.
+  - Field allow-lists refuse any posted recipient, subject or body on send,
+    and any subject or body on approve.
+  - Nothing happens on a `GET` request. Generation, research and
+    qualification also run only on an explicit `POST`.
+- **Security.**
+  - Signed double-submit CSRF tokens on every UI `POST` (form field or HTMX
+    header), plus Origin and `Sec-Fetch-Site` checks.
+  - Bounded, standard-library form parsing.
+  - Redirects only to fixed internal paths, and whitelisted notice codes.
+  - A strict CSP and safe headers on `/ui`.
+  - Autoescaped templates, and HTML error pages that never show exception
+    details.
+  - Content-hashed asset URLs.
+- **Backend changes (read-only, no rule changes):**
+  - `discovery.list_candidates` and `to_candidate_summary`;
+  - `prospects.find_saved_prospect`;
+  - `drafts.list_drafts_overview` and `drafts.count_drafts_by_state`;
+  - `delivery.list_attempts_overview`;
+  - `DRAFT_ERRORS` made public in `app/routers/drafts.py`;
+  - `/ui` error delegation in `app/errors.py`;
+  - `GET /` lists `ui`.
+- **Assets and dependencies.**
+  - Jinja2 3.1.6 is now a declared dependency.
+  - HTMX 2.0.10 is vendored in `app/static/vendor/` (0BSD; the same SHA-256
+    from two CDNs).
+  - Tailwind CSS v4.3.3 is compiled with the standalone CLI (no Node.js;
+    the binary was verified against the release's `sha256sums.txt` and is
+    kept in the git-ignored `tools/`), via `python -m scripts.build_css`.
+  - The compiled `app/static/css/app.css` is committed.
+- **Docs corrected:** `docs/architecture.md` still said that
+  `EMAIL_PROVIDER=fake` with dry run off records a `sent` attempt; since
+  the PR #10 fix it is refused.
+
 **Exit criteria**
 
-- Routes remain thin; templates contain no business rules.
-- Approval UI calls the backend approval endpoint; UI cannot bypass it.
-- Accessibility basics (labels, focus states) and error rendering covered.
+- [x] Routes remain thin; templates contain no business rules. UI routes
+      parse, validate with the existing schemas, call services, and
+      render.
+- [x] The approval UI calls the backend approval service and cannot bypass
+      it. Tests cover:
+      - smuggled fields refused, with the sent message identical to the
+        draft;
+      - an unapproved send refused;
+      - a fake provider never really delivers;
+      - an uncertain delivery blocks resending;
+      - page loads never approve or send.
+- [x] Accessibility basics and error rendering are covered:
+      - labels on every input, with `aria-invalid` and `aria-describedby`
+        for errors;
+      - a skip link, `aria-current` navigation, visible focus rings, and
+        text labels on every status;
+      - HTML error pages for 403, 404, 409, 413, 415, 422, 500 and 503.
+- [x] CSRF and safe rendering are tested: every UI `POST` route needs a
+      token; wrong, foreign and cross-origin requests are refused; the
+      cookie attributes, headers and CSP are checked; there are no inline
+      scripts; secrets are never rendered; output is escaped.
+- [x] Phase 0–5 regression tests pass. Full suite (2026-10-25, Python
+      3.14.8, PostgreSQL 17, `TEST_DATABASE_URL` → `explee_test`): 1030
+      passed (99 new), with the existing Starlette/httpx deprecation
+      warning. Without a test database: 734 passed, 296 skipped.
+      `alembic upgrade head` and `alembic check` on a freshly reset
+      `explee_test`: no pending operations. No migration was added.
+- [x] No authentication, bulk or scheduled sending, workers, new frontend
+      framework, Docker, or new discovery, research or qualification rules.
+
+**Not verified**
+
+- The interface was checked manually in a browser (desktop and a 375 px
+  mobile viewport) against the disposable `explee_test` database with fake
+  providers: an approval was submitted through HTMX, the console showed no
+  errors, and no page scrolled horizontally. No automated browser or
+  screen-reader tests were run.
+- No live Tavily, Mistral, or SMTP call was made from the UI. The UI uses
+  the same services that the earlier phases tested with mocks.
+- The UI was not run against the development database `explee`. It is at
+  `0007` with no rows (read-only check), so it is ready for the UI.
 
 ## P7 — Reliability and operations
 

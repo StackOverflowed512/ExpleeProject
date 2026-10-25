@@ -8,9 +8,14 @@ suite never touches the application database configured in ``.env``.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
+from asgi_lifespan import LifespanManager
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -89,3 +94,88 @@ def db_session(
         yield session
     finally:
         session.close()
+
+
+# -- web interface (Phase 6) -------------------------------------------------------
+_CSRF_META = re.compile(r'<meta name="csrf-token" content="([^"]+)"')
+
+
+class UiClient:
+    """Browser-like client: keeps cookies and the latest page's CSRF token."""
+
+    def __init__(self, http: AsyncClient, app: FastAPI) -> None:
+        self.http = http
+        self.app = app
+        self.token: str | None = None
+
+    def _remember(self, response: Response) -> None:
+        match = _CSRF_META.search(response.text)
+        if match:
+            self.token = match.group(1)
+
+    async def get(self, path: str, **kwargs: Any) -> Response:
+        response = await self.http.get(path, **kwargs)
+        self._remember(response)
+        return response
+
+    async def post(
+        self,
+        path: str,
+        data: dict[str, Any] | None = None,
+        *,
+        csrf: bool = True,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
+        fields = dict(data or {})
+        if csrf:
+            if self.token is None:
+                await self.get("/ui/system")
+            fields.setdefault("csrf_token", self.token)
+        response = await self.http.post(path, data=fields, headers=headers)
+        self._remember(response)
+        return response
+
+
+@pytest.fixture
+def ui_factory(
+    build_app: Any, db_session_factory: sessionmaker[Session], clean_database: None
+) -> Any:
+    """Build the full app against the test database with injectable fakes."""
+
+    def _make(
+        *,
+        search: Any = None,
+        fetcher: Any = None,
+        generator: Any = None,
+        mailer: Any = None,
+        **settings: Any,
+    ) -> Any:
+        """Provider objects are injected; any other keyword is a setting."""
+        application: FastAPI = build_app(**settings)
+        application.state.session_factory = db_session_factory
+        if search is not None:
+            application.state.search_provider = search
+        if fetcher is not None:
+            application.state.website_fetcher = fetcher
+        if generator is not None:
+            application.state.draft_generator = generator
+        if mailer is not None:
+            application.state.email_provider = mailer
+
+        class _Ctx:
+            async def __aenter__(self) -> UiClient:
+                self._lifespan = LifespanManager(application)
+                await self._lifespan.__aenter__()
+                self._http = AsyncClient(
+                    transport=ASGITransport(app=application, raise_app_exceptions=False),
+                    base_url="http://test",
+                )
+                return UiClient(self._http, application)
+
+            async def __aexit__(self, *exc_info: object) -> None:
+                await self._http.aclose()
+                await self._lifespan.__aexit__(*exc_info)
+
+        return _Ctx()
+
+    return _make

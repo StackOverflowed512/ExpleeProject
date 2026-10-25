@@ -51,7 +51,7 @@ from app.services.providers.email import EmailDeliveryError, EmailProvider
 router = APIRouter(tags=["drafts"])
 
 # Domain exception -> (stable code, HTTP status).
-_ERRORS: dict[type[Exception], tuple[str, int]] = {
+DRAFT_ERRORS: dict[type[Exception], tuple[str, int]] = {
     DraftNotFoundError: ("draft_not_found", 404),
     DraftRevisionMismatchError: ("draft_revision_mismatch", 409),
     DraftAlreadyApprovedError: ("draft_already_approved", 409),
@@ -74,7 +74,7 @@ _VALIDATION = {422: {"description": "Request validation failed (error envelope).
 def _app_error(exc: Exception) -> AppError:
     if isinstance(exc, EmailDeliveryError):
         return AppError(str(exc), code=exc.code, status_code=exc.http_status)
-    code, status_code = _ERRORS[type(exc)]
+    code, status_code = DRAFT_ERRORS[type(exc)]
     return AppError(str(exc), code=code, status_code=status_code)
 
 
@@ -140,7 +140,7 @@ def approve(
             revision=payload.revision,
             actor=settings.approval_actor,
         )
-    except tuple(_ERRORS) as exc:
+    except tuple(DRAFT_ERRORS) as exc:
         raise _app_error(exc) from exc
     if not result.created:
         response.status_code = status.HTTP_200_OK
@@ -194,7 +194,7 @@ def send(
             status_code=exc.cause.http_status,
             details={"attempt_id": exc.attempt_id, "retry_safe": not exc.cause.uncertain},
         ) from exc
-    except (*tuple(_ERRORS), EmailDeliveryError) as exc:
+    except (*tuple(DRAFT_ERRORS), EmailDeliveryError) as exc:
         raise _app_error(exc) from exc
     with session_factory() as session:
         detail = _detail(session, draft_id)
@@ -225,6 +225,6 @@ def resolve(
 ) -> DraftDetail:
     try:
         resolve_delivery(session, draft_id, delivered=payload.delivered, note=payload.note)
-    except tuple(_ERRORS) as exc:
+    except tuple(DRAFT_ERRORS) as exc:
         raise _app_error(exc) from exc
     return _detail(session, draft_id)

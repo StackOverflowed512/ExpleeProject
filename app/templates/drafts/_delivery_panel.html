@@ -1,0 +1,77 @@
+{% from "macros.html" import alert, csrf_input, field_error, submit with context %}
+{% set real_attempts = draft.send_attempts | selectattr("mode", "equalto", "real") | list %}
+{% set last_real = real_attempts[-1] if real_attempts else none %}
+<section id="delivery-panel" class="card p-5" aria-labelledby="delivery-heading" aria-live="polite"
+  {% if draft.state == "sending" and actions.resolve_wait %}hx-get="/ui/drafts/{{ draft.id }}/delivery" hx-trigger="every 5s" hx-target="this" hx-swap="outerHTML"{% endif %}>
+  <h2 id="delivery-heading" class="section-title"><span class="step">2</span> Delivery</h2>
+
+  <div class="mode-box {{ 'mode-box-live' if mode.real_enabled else 'mode-box-safe' }} mt-3">
+    <p class="font-semibold">{{ mode.title }}</p>
+    <p class="mt-1 text-sm">{{ mode.explanation }}</p>
+    {% if mode.blockers %}
+      <ul class="mt-2 list-disc pl-5 text-sm">{% for reason in mode.blockers %}<li>{{ reason }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+
+  {% if send_errors %}
+    {% call alert("danger", "The send request was not accepted.") %}
+      <ul class="mt-1 list-disc pl-5">{% for name, message in send_errors.items() %}<li>{{ message }}</li>{% endfor %}</ul>
+    {% endcall %}
+  {% endif %}
+
+  {% if draft.state == "pending" %}
+    <p class="mt-4 text-sm text-slate-700">Approve the draft first. Sending, including a dry run, needs a recorded approval.</p>
+
+  {% elif draft.state == "approved" %}
+    {% if actions.can_send %}
+      <div class="mt-4 space-y-4">
+        <form method="post" action="/ui/drafts/{{ draft.id }}/send">
+          {{ csrf_input() }}
+          <input type="hidden" name="mode" value="dry_run">
+          <p class="text-sm text-slate-700">A dry run records a simulated attempt. Nothing is sent.</p>
+          <div class="mt-2">{{ submit("Record a dry run", kind="secondary", busy="Recording…") }}</div>
+        </form>
+        {% if mode.real_enabled %}
+          <form method="post" action="/ui/drafts/{{ draft.id }}/send" class="send-box">
+            {{ csrf_input() }}
+            <input type="hidden" name="mode" value="deliver">
+            <p class="text-sm font-semibold">Send one real email to {{ draft.approval.recipient_email }}</p>
+            <p class="mt-1 text-xs text-slate-700">Sent once, from {{ sender }}. A sent draft is never sent again.</p>
+            <label class="choice mt-3">
+              <input type="checkbox" name="confirm_send" value="yes" required class="checkbox">
+              <span>Yes, send this approved message now.</span>
+            </label>
+            {{ field_error(send_errors, "confirm_send") }}
+            <div class="mt-3">{{ submit("Send email", kind="danger", busy="Sending…") }}</div>
+          </form>
+        {% else %}
+          <p class="text-sm text-slate-700">Real delivery is disabled by the configuration above, so the only option is a dry run.</p>
+        {% endif %}
+      </div>
+    {% else %}
+      {{ alert("danger", "This draft's approval does not match its content, so it cannot be sent.") }}
+    {% endif %}
+
+  {% elif draft.state == "sending" %}
+    {% if actions.resolve_wait %}
+      {% call alert("warning", "A delivery attempt is in progress. Wait for it to finish; this panel refreshes every few seconds. Do not try to send again.", title="Sending") %}
+        {% if actions.in_progress_since %}<p class="mt-1 text-xs">Started {{ actions.in_progress_since | dt }}.</p>{% endif %}
+      {% endcall %}
+    {% else %}
+      {% call alert("danger", "The delivery attempt has not finished for more than " ~ stale_minutes ~ " minutes, so the sending process probably stopped. The message may or may not have been sent.", title="Delivery interrupted") %}
+        <p class="mt-1">If the server is still running a send, recording an outcome is refused until it finishes.</p>
+      {% endcall %}
+      {% include "drafts/_resolve_form.html" %}
+    {% endif %}
+
+  {% elif draft.state == "delivery_uncertain" %}
+    {% call alert("danger", "The connection failed after the message was transmitted, so the mail server may have accepted it. Do not send it again until you have checked. Explee never retries automatically.", title="Delivery uncertain: the email may already have been sent") %}{% endcall %}
+    {% include "drafts/_resolve_form.html" %}
+
+  {% elif draft.state == "sent" %}
+    {% call alert("success", "The mail server accepted this message. Explee will not send this draft again.", title="Sent") %}
+      {% if last_real and last_real.outcome == "sent" %}<p class="mt-1 text-xs">At {{ last_real.finished_at | dt }} · Message-ID <code class="break-all">{{ last_real.message_id }}</code></p>{% endif %}
+      <p class="mt-1 text-xs">Server acceptance does not guarantee inbox placement.</p>
+    {% endcall %}
+  {% endif %}
+</section>

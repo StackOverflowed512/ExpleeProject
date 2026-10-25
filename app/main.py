@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import Engine
 
 from app import SERVICE_NAME, __version__
@@ -22,12 +23,20 @@ from app.routers import (
     prospects,
     qualification,
     research,
+    ui,
 )
 from app.services.providers import (
     build_draft_generator,
     build_email_provider,
     build_search_provider,
     build_website_fetcher,
+)
+from app.web import csrf
+from app.web.rendering import (
+    STATIC_DIR,
+    build_templates,
+    render_error_page,
+    security_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +87,9 @@ def create_app(
     for outreach drafts (``DRAFT_GENERATOR``), and ``email_provider`` for
     delivery (``EMAIL_PROVIDER``, default ``fake``). The engine is created eagerly
     but no database connection is opened until the first query.
+
+    The server-rendered web interface is served under ``/ui`` with its assets
+    under ``/static``; the JSON API routes are unchanged.
     """
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
@@ -118,8 +130,14 @@ def create_app(
     app.state.website_fetcher = fetcher
     app.state.draft_generator = generator
     app.state.email_provider = mailer
+    app.state.templates = build_templates()
+    # Per-process CSRF signing secret: a restart invalidates open forms.
+    app.state.csrf_secret = csrf.new_secret()
+    app.state.html_error_renderer = render_error_page
 
     register_exception_handlers(app)
+    app.middleware("http")(security_headers)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(health.router)
     app.include_router(discovery.router)
     app.include_router(research.router)
@@ -127,6 +145,7 @@ def create_app(
     app.include_router(prospects.router)
     app.include_router(campaigns.router)
     app.include_router(drafts.router)
+    app.include_router(ui.router)
 
     @app.get(
         "/",
@@ -138,6 +157,7 @@ def create_app(
         base = str(request.base_url).rstrip("/")
         return {
             "service": SERVICE_NAME,
+            "ui": f"{base}/ui/",
             "docs": f"{base}/docs",
             "health": f"{base}/health",
             "discovery": f"{base}/discovery/search",

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header, badge, dl_row, external_link with context %}
+{% block title %}{{ prospect.candidate.name }}{% endblock %}
+{% block content %}
+  {% set q = prospect.qualification %}
+  <p class="breadcrumb"><a class="link" href="/ui/prospects">Saved prospects</a> <span aria-hidden="true">/</span> Prospect #{{ prospect.id }}</p>
+  {% call page_header(prospect.candidate.name, prospect.candidate.domain or "No domain stored") %}
+    {{ badge("qualification_status", q.status) }}
+    <a class="btn btn-secondary" href="/ui/companies/{{ prospect.candidate.id }}">Company details</a>
+  {% endcall %}
+
+  <div class="grid gap-6 lg:grid-cols-2">
+    <section class="card p-5" aria-labelledby="company-heading">
+      <h2 id="company-heading" class="section-title">Company</h2>
+      <dl class="dl mt-3">
+        {% call dl_row("Website") %}{{ external_link(prospect.candidate.website_url) }}{% endcall %}
+        {{ dl_row("Domain", prospect.candidate.domain) }}
+        {% call dl_row("Search snippet") %}{% if prospect.candidate.description %}{{ prospect.candidate.description }}<p class="help">Third-party search text, not verified.</p>{% else %}<span class="text-slate-400">—</span>{% endif %}{% endcall %}
+        {% call dl_row("Discovered") %}<code>{{ prospect.candidate.provider }}</code> · {{ prospect.candidate.discovered_at | dt }}{% endcall %}
+        {% call dl_row("Saved") %}<time datetime="{{ prospect.saved_at.isoformat() }}">{{ prospect.saved_at | dt }}</time>{% endcall %}
+      </dl>
+    </section>
+
+    <section class="card p-5" aria-labelledby="justification-heading">
+      <h2 id="justification-heading" class="section-title">Justifying qualification</h2>
+      <p class="mt-2 text-sm text-slate-600">The run this prospect was saved from (#{{ q.id }}). It is not recalculated.</p>
+      <div class="mt-3 flex items-center gap-3"><span class="text-2xl font-semibold">{{ q.score }}</span><span class="text-sm text-slate-600">/ 100, threshold {{ q.threshold }} · coverage {{ q.evidence_coverage | percent }}</span></div>
+      <p class="mt-3 text-sm text-slate-800">{{ q.rationale }}</p>
+      <dl class="dl mt-4">
+        {% call dl_row("Rules") %}<code>{{ q.rule_version }}</code> · profile <code>{{ q.criteria.profile }}</code>{% endcall %}
+        {{ dl_row("Matched signals", q.matched_signals | join(", ")) }}
+        {{ dl_row("Missing signals", q.missing_signals | join(", ")) }}
+        {% call dl_row("Qualified at") %}{{ q.qualified_at | dt }}{% endcall %}
+      </dl>
+      <ul class="mt-4 space-y-2 text-sm">
+        {% for f in q.factors %}
+          <li class="flex flex-wrap items-center justify-between gap-2"><span>{{ f.label }}</span><span class="flex items-center gap-2">{{ badge("factor_result", f.result) }} {{ f.points }} / {{ f.weight }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+
+  <section class="card mt-6 p-5" aria-labelledby="research-history-heading">
+    <h2 id="research-history-heading" class="section-title">Research history</h2>
+    {% if attempts %}
+      <div class="mt-2 overflow-x-auto">
+        <table class="table">
+          <caption class="sr-only">Website research attempts, newest first</caption>
+          <thead><tr><th scope="col">Fetched</th><th scope="col">Outcome</th><th scope="col">Page</th><th scope="col">Details</th></tr></thead>
+          <tbody>
+            {% for a in attempts %}
+              <tr>
+                <td>{{ a.fetched_at | dt }}</td>
+                <td>{{ badge("research_outcome", a.outcome) }}</td>
+                <td>{{ a.page_title or "—" }}</td>
+                <td>{% if a.failure_category %}{{ failure_text(a.failure_category) }}{% elif a.http_status %}HTTP {{ a.http_status }}{% else %}—{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="mt-2 text-sm text-slate-600">No research attempts are stored.</p>
+    {% endif %}
+  </section>
+{% endblock %}

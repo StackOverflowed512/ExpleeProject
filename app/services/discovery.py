@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -289,3 +289,35 @@ def run_discovery(
             skipped=skipped,
         ),
     )
+
+
+def to_candidate_summary(row: CompanyCandidate) -> CandidateSummary:
+    return CandidateSummary(
+        id=row.id,
+        name=row.name,
+        website_url=row.website_url,
+        domain=row.domain,
+        description=row.description,
+        provider=row.provider,
+        provider_result_id=row.provider_result_id,
+        source_url=row.source_url,
+        discovered_at=row.discovered_at,
+        updated_at=row.updated_at,
+    )
+
+
+def list_candidates(
+    session: Session, *, limit: int, offset: int = 0
+) -> tuple[int, list[CandidateSummary]]:
+    """Persisted candidates, most recently discovered first (ties by ID).
+
+    Read-only; used by the web interface so earlier discoveries stay reachable.
+    """
+    total = session.execute(select(func.count()).select_from(CompanyCandidate)).scalar_one()
+    rows = session.execute(
+        select(CompanyCandidate)
+        .order_by(CompanyCandidate.discovered_at.desc(), CompanyCandidate.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).scalars()
+    return total, [to_candidate_summary(row) for row in rows]

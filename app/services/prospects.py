@@ -262,3 +262,8 @@ def to_prospect_detail(
         candidate=CandidateSummary.model_validate(candidate, from_attributes=True),
         qualification=to_qualification_record(qualification),
     )
+
+
+def find_saved_prospect(session: Session, candidate_id: int) -> SavedProspect | None:
+    """The candidate's saved prospect, if it has been saved (read-only)."""
+    return _existing(session, candidate_id)

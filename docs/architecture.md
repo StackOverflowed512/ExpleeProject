@@ -7,7 +7,7 @@ can later be extracted or replaced without touching business logic.
 ## Layering
 
 ```
-HTTP (app/routers)          thin: parse, validate, delegate, serialize
+HTTP (app/routers)          thin: parse, validate, delegate, serialize (JSON API and /ui pages)
   └─ Services (app/services) business rules; framework-agnostic where practical
        └─ Providers          replaceable adapters (web search, website fetcher, Mistral drafts; email in P5)
             └─ Models (app/models) SQLAlchemy 2.x ORM against PostgreSQL
@@ -889,9 +889,146 @@ following:
 - an approved draft;
 - an explicit `{"mode": "deliver"}` request.
 
-With `EMAIL_PROVIDER=fake` and dry run off, "deliver" records a `sent`
-attempt with provider `fake` but delivers nothing; use that only for
-testing.
+With `EMAIL_PROVIDER=fake`, "deliver" is always refused with 409
+`delivery_disabled`, even when dry run is off: the fake provider declares
+`delivers_email = False`, so a simulated send can never be recorded as
+`sent`. Only the SMTP adapter really delivers.
+
+## Web interface (P6)
+
+A server-rendered interface for one local operator, served by the same
+FastAPI process under `/ui`. It is built with Jinja2 templates, HTMX 2.0.10
+and Tailwind CSS v4, and needs no Node.js, no separate frontend server and
+no new database. The JSON API is unchanged; `GET /` now also lists `ui`.
+
+**No authentication.** Like the API, the UI has no sign-in. It is meant for
+one person on their own machine and must not be exposed to an untrusted
+network until a future phase adds authentication and deployment security.
+Every page says so.
+
+### Layout
+
+| Path | Role |
+| --- | --- |
+| `app/routers/ui/` | Thin routes: `explorer` (search, company page, research, qualify, save), `prospects`, `campaigns`, `drafts` (review, approve, send, resolve), `deliveries`, `system`. |
+| `app/web/csrf.py` | Signed double-submit CSRF tokens and Origin / `Sec-Fetch-Site` checks. |
+| `app/web/forms.py` | Bounded `application/x-www-form-urlencoded` parsing (standard library only), per-route field allow-lists, Pydantic error mapping. |
+| `app/web/rendering.py` | Jinja2 environment (autoescape, `StrictUndefined`), `render()`, internal-only `redirect()`, security-header middleware, HTML error pages. |
+| `app/web/presentation.py` | Labels, tones and display hints: status wording, failure categories in plain language, delivery-mode banner, which buttons a draft page shows, fixed notice messages. |
+| `app/templates/` | `base.html` (shell), `macros.html` (badges, fields, alerts, pagination), one folder per area; `_*.html` files are HTMX fragments. |
+| `app/static/` | `css/app.css` (compiled, committed), `src/app.css` (Tailwind source), `vendor/htmx.min.js` (vendored, 0BSD). |
+
+### Request flow
+
+- **Reads** are `GET` routes that call the same services as the API and
+  render a template. No `GET` changes state: viewing a page never
+  researches, qualifies, generates, approves or sends.
+- **Writes** are `POST` routes. They:
+  1. check the origin;
+  2. parse the bounded form;
+  3. verify the CSRF token;
+  4. refuse any undeclared field;
+  5. validate with the existing Pydantic schemas;
+  6. call the service in a worker thread, since services are synchronous;
+  7. redirect with `303` to a fixed internal path (Post/Redirect/Get).
+
+  A redirect can carry a whitelisted `notice` code; free text is never
+  taken from the URL. Validation and domain errors re-render the page with
+  the right status code, the safe message, and the user's input preserved.
+- **HTMX** is progressive enhancement:
+  - `hx-boost` on `<body>` turns links and forms into partial page swaps;
+  - `hx-disabled-elt` disables submit buttons while a request runs;
+  - explicit targets refresh only the results for the Explorer search, the
+    prospect filters and the delivery-history filters;
+  - the delivery panel polls a read-only fragment every 5 s while a send
+    is in progress.
+
+  A route returns a fragment only when `HX-Target` names its container and
+  the request is not boosted. Every page works as plain HTML forms without
+  JavaScript.
+- **Errors under `/ui`** (unknown page, invalid path parameter, unexpected
+  exception, database unreachable) render an HTML page through
+  `app.state.html_error_renderer`. Exception details are never shown. API
+  paths keep the JSON envelope.
+
+### Safety and security
+
+- **Approval and sending stay separate and server-enforced.**
+  - Approve, send and resolve are three distinct `POST` routes, each
+    needing an explicit confirmation checkbox.
+  - The approve form accepts only `recipient_email`, `revision` and the
+    confirmation. The send form accepts only `mode` and the confirmation.
+    A posted `subject`, `body` or `recipient_email` is refused (422) before
+    any service call.
+  - All state, approval-match, configuration, concurrency and idempotency
+    checks are the Phase 5 services'. The buttons a page shows are only
+    hints from `presentation.draft_actions`, which reuses
+    `approvals.approval_matches`.
+- **Dry run versus real delivery.** Every page shows the delivery mode. The
+  draft page lists why real delivery is disabled: `EMAIL_DRY_RUN`, a
+  provider that only simulates delivery, or a missing sender. The send
+  button appears only when all three allow it, and the backend checks them
+  again.
+- **Uncertain delivery.**
+  - The page explains that the email may have been accepted and must not
+    be sent again before someone checks.
+  - It shows the Message-ID to look for, and offers only the resolve form,
+    never a send button.
+  - The navigation shows a count of drafts that need attention.
+- **CSRF.**
+  - A random nonce lives in the `explee_csrf` cookie (`HttpOnly`,
+    `SameSite=Strict`, `Path=/ui`).
+  - Forms carry `HMAC-SHA256(secret, nonce)` in a hidden field; HTMX sends
+    the same token in an `X-CSRF-Token` header from `hx-headers`.
+  - The secret is random per process, so a restart expires open forms.
+  - Requests with a foreign `Origin`, or a `Sec-Fetch-Site` of `cross-site`
+    or `same-site`, are refused.
+  - The JSON API is not reachable from a cross-site HTML form: its bodies
+    must be `application/json`, which needs a CORS preflight that the app
+    never grants.
+- **Response headers on `/ui`:**
+  - a strict CSP: `default-src 'self'`, no inline scripts or styles,
+    `frame-ancestors 'none'`, `form-action 'self'`;
+  - `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+    `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+
+  HTMX is configured with `allowEval: false`, `selfRequestsOnly` and no
+  `localStorage` history snapshots. API responses also get the nosniff,
+  frame, referrer and opener headers.
+- **Rendering.**
+  - Autoescaping is on everywhere, and no template marks text as safe.
+  - External links (websites, sources) are rendered only for http(s), with
+    `rel="noopener noreferrer nofollow"`.
+  - The system page gets a curated dictionary of settings: never the
+    database URL, and for API keys and passwords only whether they are set.
+  - Delivery history omits recipients; they appear only on the draft page.
+
+### Backend additions for the UI (read-only)
+
+The API had no cross-cutting lists, so Phase 6 adds small read-only queries.
+None of them changes a rule:
+
+- `discovery.list_candidates` (recent candidates, so Explorer results stay
+  reachable);
+- `prospects.find_saved_prospect`;
+- `drafts.list_drafts_overview` and `drafts.count_drafts_by_state` (the
+  draft queue and the attention badge);
+- `delivery.list_attempts_overview` (delivery history).
+
+`app/routers/drafts.py` exposes its error map as `DRAFT_ERRORS` so the UI
+reports the same codes and statuses. `app/errors.py` delegates `/ui` errors
+to the HTML renderer.
+
+### Styling and assets
+
+Tailwind v4 is configured CSS-first in `app/static/src/app.css`: no
+JavaScript config, and `@source` points at `app/templates`. Component
+classes (`btn`, `badge-*`, `alert-*`, `card`, `input`) keep templates
+readable. `python -m scripts.build_css` runs the Tailwind standalone CLI
+from `tools/tailwind/` or `TAILWIND_BIN`; it never downloads anything. The
+compiled `app/static/css/app.css` is committed, so the CLI is needed only
+after changing templates or styles. Status is never shown by color alone:
+every badge and banner has a text label.
 
 ## Non-goals
 

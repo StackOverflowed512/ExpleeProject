@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header, badge, empty_state, pagination with context %}
+{% block title %}Draft review{% endblock %}
+{% block content %}
+  {{ page_header("Draft review", "Every draft needs an explicit approval for one recipient before anything can be sent.") }}
+
+  <nav class="tabs" aria-label="Draft status">
+    {% for key, entry in views.items() %}
+      <a href="/ui/drafts?view={{ key }}" class="tab {{ 'tab-active' if key == view else '' }}"{% if key == view %} aria-current="page"{% endif %}>
+        {{ entry[0] }}{% if key == "attention" and attention_count %} <span class="nav-count">{{ attention_count }}</span>{% endif %}
+      </a>
+    {% endfor %}
+  </nav>
+
+  {% if view == "attention" and items %}
+    <div class="alert alert-danger mt-4" role="alert">
+      <p class="font-semibold">These drafts need a person.</p>
+      <p>Their delivery is uncertain or was interrupted. Open each one, check whether the email was sent, and record the result. Do not send them again before that.</p>
+    </div>
+  {% endif %}
+
+  {% if items %}
+    <div class="card mt-4 overflow-x-auto">
+      <table class="table">
+        <caption class="sr-only">{{ views[view][0] }}</caption>
+        <thead><tr><th scope="col">Draft</th><th scope="col">Prospect</th><th scope="col">Campaign</th><th scope="col">Status</th><th scope="col">Updated</th></tr></thead>
+        <tbody>
+          {% for item in items %}
+            <tr>
+              <td><a class="link font-medium" href="/ui/drafts/{{ item.draft.id }}">{{ item.draft.subject | truncate(70) }}</a><p class="text-xs text-slate-500">#{{ item.draft.id }} · revision {{ item.draft.revision }}</p></td>
+              <td>{{ item.prospect_name }}</td>
+              <td><a class="link" href="/ui/campaigns/{{ item.draft.campaign_id }}">{{ item.campaign_name }}</a></td>
+              <td>{{ badge("draft_state", item.draft.state) }}</td>
+              <td><time datetime="{{ item.draft.updated_at.isoformat() }}">{{ item.draft.updated_at | dt }}</time></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {{ pagination(pages, "/ui/drafts", "&view=" ~ view) }}
+  {% else %}
+    <div class="mt-4">
+      {% call empty_state("Nothing here", "No drafts with this status.") %}
+        {% if view == "review" %}<a class="btn btn-secondary" href="/ui/campaigns">Generate drafts from a campaign</a>{% endif %}
+      {% endcall %}
+    </div>
+  {% endif %}
+{% endblock %}
