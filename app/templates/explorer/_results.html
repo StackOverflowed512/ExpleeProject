@@ -1,4 +1,4 @@
-{% from "macros.html" import alert, empty_state with context %}
+{% from "macros.html" import alert, empty_state, icon with context %}
 <section id="search-results" class="mt-6" aria-live="polite" aria-labelledby="results-heading">
   {% if error %}
     {% call alert("danger", error, title="The search did not complete") %}
@@ -11,28 +11,37 @@
       </ul>
     {% endcall %}
   {% elif results is not none %}
-    <h2 id="results-heading" class="section-title">Results for “{{ results.query }}”</h2>
-    <p class="section-help">
-      {{ results.counts.returned }} returned · {{ results.counts.created }} new · {{ results.counts.updated }} updated · {{ results.counts.skipped }} skipped (provider <code>{{ results.provider }}</code>)
-    </p>
+    <div class="flex flex-wrap items-end justify-between gap-2">
+      <h2 id="results-heading" class="section-title">Results for “{{ results.query }}”</h2>
+      <p class="text-sm tabular-nums text-muted">
+        {{ results.counts.returned }} returned · {{ results.counts.created }} new · {{ results.counts.updated }} updated · {{ results.counts.skipped }} skipped (provider <code>{{ results.provider }}</code>)
+      </p>
+    </div>
     {% if results.results %}
       <ul class="mt-3 grid gap-3 md:grid-cols-2">
         {% for c in results.results %}
-          <li class="card p-4">
+          <li class="card flex flex-col p-4 transition-colors duration-150 hover:border-line-strong">
             <div class="flex items-start justify-between gap-3">
-              <a class="link font-semibold" href="/ui/companies/{{ c.id }}">{{ c.name }}</a>
+              <div class="min-w-0">
+                <a class="link-plain cell-title" href="/ui/companies/{{ c.id }}">{{ c.name }}</a>
+                <p class="mt-0.5 flex items-center gap-1.5 text-sm text-muted">{{ icon("globe", "h-3.5 w-3.5") }}{{ c.domain or "No domain" }}</p>
+              </div>
               <span class="badge badge-neutral">Discovered</span>
             </div>
-            <p class="mt-1 text-sm text-slate-600">{{ c.domain or "No domain" }}</p>
             {% if c.description %}
-              <p class="mt-2 text-sm text-slate-700"><span class="sr-only">Search snippet: </span>{{ c.description | truncate(220) }}</p>
+              <p class="mt-3 text-sm leading-6 text-ink-soft"><span class="sr-only">Search snippet: </span>{{ c.description | truncate(220) }}</p>
             {% endif %}
-            <p class="mt-2 text-xs text-slate-500">Snippet from the search provider, not verified.</p>
+            <div class="mt-auto flex items-center justify-between gap-3 pt-3">
+              <p class="text-xs text-subtle">Snippet from the search provider, not verified.</p>
+              <a class="btn btn-ghost btn-sm" href="/ui/companies/{{ c.id }}">Open{{ icon("arrow-right") }}</a>
+            </div>
           </li>
         {% endfor %}
       </ul>
     {% else %}
-      {% call empty_state("No results", "The provider returned no usable companies for this query. Try a broader query.") %}{% endcall %}
+      <div class="mt-3">
+        {% call empty_state("No results", "The provider returned no usable companies for this query. Try a broader query.", "search") %}{% endcall %}
+      </div>
     {% endif %}
   {% endif %}
 </section>

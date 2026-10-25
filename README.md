@@ -632,6 +632,7 @@ no build step to run; the compiled stylesheet and HTMX are committed.
 
 | Page | What you can do |
 | --- | --- |
+| **Overview** (`/ui/overview`, where `/ui/` lands) | Real totals (companies, prospects, campaigns, drafts per state), drafts awaiting review, recent delivery activity, and next steps derived from your data. Uncertain deliveries are always listed first. |
 | **Explorer** (`/ui/explorer`) | Search with the configured provider. Open a company to see its discovery provenance, research its stored website (or refresh it), run qualification with your criteria, read each factor's evidence, and save it once the latest run is *qualified*. |
 | **Saved prospects** (`/ui/prospects`) | Filter by text, domain, score range, and saved date; open a prospect to see its justifying qualification and research history. |
 | **Campaigns** (`/ui/campaigns`) | Create a campaign from saved prospects, then press **Generate drafts**. Generation never happens on page load and never approves or sends. |

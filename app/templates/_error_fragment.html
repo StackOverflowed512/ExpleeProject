@@ -1,6 +1,10 @@
 {# Error response for an HTMX fragment request: replaces only the target element. #}
+{% from "macros.html" import icon %}
 <section id="{{ target }}" class="alert alert-{{ 'warning' if status_code < 500 else 'danger' }}" role="alert">
-  <p class="font-semibold">{{ title }}</p>
-  <p>{{ message }}</p>
-  <p class="mt-2 text-xs">Status {{ status_code }} · <code>{{ code }}</code> · Reload the page to try again.</p>
+  {{ icon("warning" if status_code < 500 else "danger") }}
+  <div class="alert-content">
+    <p class="alert-title">{{ title }}</p>
+    <p>{{ message }}</p>
+    <p class="mt-1 text-xs opacity-80">Status {{ status_code }} · <code>{{ code }}</code> · Reload the page to try again.</p>
+  </div>
 </section>

@@ -1,56 +1,75 @@
 {% extends "base.html" %}
-{% from "macros.html" import page_header, text_field, textarea_field, csrf_input, form_errors, field_error, empty_state, submit with context %}
+{% from "macros.html" import page_header, breadcrumb, text_field, textarea_field, csrf_input, form_errors, field_error, empty_state, submit, icon, score with context %}
 {% block title %}New campaign{% endblock %}
 {% block content %}
-  <p class="breadcrumb"><a class="link" href="/ui/campaigns">Campaigns</a> <span aria-hidden="true">/</span> New</p>
-  {{ page_header("New campaign", "The brief is sent to the draft generator. It must not contain email addresses or placeholders such as [Name].") }}
+  {{ breadcrumb([("Campaigns", "/ui/campaigns"), ("New campaign", none)]) }}
+  {{ page_header("New campaign", "The brief is sent to the draft generator. It must not contain email addresses or placeholders such as [Name].", eyebrow="Outreach") }}
 
   {% if not prospects %}
-    {% call empty_state("No saved prospects to choose from", "A campaign needs at least one saved prospect. Save qualified companies from the Explorer first.") %}
-      <a class="btn btn-primary" href="/ui/explorer">Open Explorer</a>
+    {% call empty_state("No saved prospects to choose from", "A campaign needs at least one saved prospect. Save qualified companies from the Explorer first.", "prospects") %}
+      <a class="btn btn-primary" href="/ui/explorer">{{ icon("explorer") }}Open Explorer</a>
     {% endcall %}
   {% else %}
-    <form method="post" action="/ui/campaigns" class="space-y-6">
+    <form method="post" hx-disabled-elt="find button[type='submit']" action="/ui/campaigns" class="mx-auto max-w-4xl space-y-6">
       {{ csrf_input() }}
       {{ form_errors(errors) }}
-      <section class="card grid gap-4 p-5 md:grid-cols-2" aria-labelledby="brief-heading">
-        <h2 id="brief-heading" class="section-title md:col-span-2">Brief</h2>
-        {{ text_field("name", "Campaign name", values.name, errors, required=True, attrs='maxlength="200"') }}
-        {{ text_field("product", "Product or service", values.product, errors, required=True, attrs='maxlength="200"') }}
-        <div class="md:col-span-2">{{ textarea_field("value_proposition", "Value proposition", values.value_proposition, errors, required=True, help="10–1000 characters.") }}</div>
-        {{ text_field("target_audience", "Target audience", values.target_audience, errors, required=True, attrs='maxlength="500"') }}
-        {{ text_field("call_to_action", "Call to action", values.call_to_action, errors, required=True, attrs='maxlength="300"') }}
-        <div>
-          <label for="tone" class="label">Tone</label>
-          <select id="tone" name="tone" class="input">
-            {% for tone in tones %}<option value="{{ tone }}" {% if values.tone == tone %}selected{% endif %}>{{ tone | capitalize }}</option>{% endfor %}
-          </select>
-          {{ field_error(errors, "tone") }}
+      <section class="card" aria-labelledby="brief-heading">
+        <div class="card-header">
+          <div>
+            <h2 id="brief-heading" class="section-title"><span class="step">1</span>Brief</h2>
+            <p class="section-help">What you offer and how drafts should sound.</p>
+          </div>
         </div>
-        {{ text_field("sender_name", "Sender name", values.sender_name, errors, help="Optional", attrs='maxlength="100"') }}
-        {{ text_field("sender_company", "Sender company", values.sender_company, errors, help="Optional", attrs='maxlength="200"') }}
-        <div class="md:col-span-2">{{ textarea_field("description", "Internal description", values.description, errors, rows=2, help="Optional; not sent to the generator.") }}</div>
+        <div class="card-body form-grid">
+          {{ text_field("name", "Campaign name", values.name, errors, required=True, attrs='maxlength="200"') }}
+          {{ text_field("product", "Product or service", values.product, errors, required=True, attrs='maxlength="200"') }}
+          <div class="sm:col-span-2">{{ textarea_field("value_proposition", "Value proposition", values.value_proposition, errors, required=True, help="10–1000 characters. The core reason a prospect should care.") }}</div>
+          {{ text_field("target_audience", "Target audience", values.target_audience, errors, required=True, attrs='maxlength="500"') }}
+          {{ text_field("call_to_action", "Call to action", values.call_to_action, errors, required=True, attrs='maxlength="300"') }}
+          <div class="min-w-0">
+            <label for="tone" class="label">Tone</label>
+            <select id="tone" name="tone" class="input {{ 'input-invalid' if errors.get('tone') else '' }}"{% if errors.get('tone') %} aria-invalid="true" aria-describedby="tone-error"{% endif %}>
+              {% for tone in tones %}<option value="{{ tone }}" {% if values.tone == tone %}selected{% endif %}>{{ tone | capitalize }}</option>{% endfor %}
+            </select>
+            {{ field_error(errors, "tone") }}
+          </div>
+          <div class="hidden sm:block" aria-hidden="true"></div>
+          {{ text_field("sender_name", "Sender name", values.sender_name, errors, help="Optional", attrs='maxlength="100"') }}
+          {{ text_field("sender_company", "Sender company", values.sender_company, errors, help="Optional", attrs='maxlength="200"') }}
+          <div class="sm:col-span-2">{{ textarea_field("description", "Internal description", values.description, errors, rows=2, help="Optional; not sent to the generator.") }}</div>
+        </div>
       </section>
 
-      <fieldset class="card p-5" aria-describedby="prospects-help{% if errors.get('prospect_ids') %} prospect_ids-error{% endif %}">
-        <legend class="section-title px-1">Prospects</legend>
-        <p id="prospects-help" class="section-help">Choose 1–{{ max_prospects }} saved prospects. Only saved prospects are listed; the server re-checks every ID.{% if prospect_total > selectable_limit %} Showing the first {{ selectable_limit }} of {{ prospect_total }} by name.{% endif %}</p>
-        {{ field_error(errors, "prospect_ids") }}
-        <ul class="mt-3 grid gap-2 md:grid-cols-2">
-          {% for p in prospects %}
-            <li>
-              <label class="choice">
-                <input type="checkbox" name="prospect_ids" value="{{ p.id }}" class="checkbox" {% if p.id in selected %}checked{% endif %}>
-                <span><span class="font-medium">{{ p.name }}</span> <span class="text-slate-500">{{ p.domain or "" }}</span><br><span class="text-xs text-slate-600">Score {{ p.qualification.score }}/{{ p.qualification.threshold }} · {{ status_view("qualification_status", p.qualification.status).label }}</span></span>
-              </label>
-            </li>
-          {% endfor %}
-        </ul>
+      <fieldset class="card" aria-describedby="prospects-help{% if errors.get('prospect_ids') %} prospect_ids-error{% endif %}">
+        <legend class="sr-only">Prospects</legend>
+        <div class="card-header">
+          <div>
+            <p class="section-title" aria-hidden="true"><span class="step">2</span>Prospects</p>
+            <p id="prospects-help" class="section-help">Choose 1–{{ max_prospects }} saved prospects. Only saved prospects are listed; the server re-checks every ID.{% if prospect_total > selectable_limit %} Showing the first {{ selectable_limit }} of {{ prospect_total }} by name.{% endif %}</p>
+          </div>
+        </div>
+        <div class="card-body">
+          {{ field_error(errors, "prospect_ids") }}
+          <ul class="grid gap-2 md:grid-cols-2 {{ 'mt-3' if errors.get('prospect_ids') else '' }}">
+            {% for p in prospects %}
+              <li>
+                <label class="choice border-line">
+                  <input type="checkbox" name="prospect_ids" value="{{ p.id }}" class="checkbox" {% if p.id in selected %}checked{% endif %}>
+                  <span class="min-w-0 flex-1">
+                    <span class="flex flex-wrap items-baseline justify-between gap-2"><span class="font-medium text-ink">{{ p.name }}</span>{{ score(p.qualification.score, p.qualification.threshold) }}</span>
+                    <span class="block text-xs text-muted">{{ p.domain or "No domain" }} · {{ status_view("qualification_status", p.qualification.status).label }}</span>
+                  </span>
+                </label>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
       </fieldset>
 
-      <div class="flex items-center gap-3">
+      <div class="form-actions">
         {{ submit("Create campaign", busy="Creating…") }}
-        <a class="btn btn-secondary" href="/ui/campaigns">Cancel</a>
+        <a class="btn btn-ghost" href="/ui/campaigns">Cancel</a>
+        <p class="help mt-0">Creating a campaign does not generate or send anything.</p>
       </div>
     </form>
   {% endif %}

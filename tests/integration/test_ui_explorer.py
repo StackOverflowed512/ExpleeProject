@@ -24,6 +24,7 @@ from app.services.providers.website_fake import FAKE_FETCHED_AT, FakeWebsiteFetc
 from tests.integration.outreach_helpers import make_candidate, make_saved_prospect
 
 PAGES = (
+    "/ui/overview",
     "/ui/explorer",
     "/ui/prospects",
     "/ui/campaigns",
@@ -63,13 +64,21 @@ async def test_every_page_renders_the_shell_with_empty_states(ui_factory: Any) -
             assert response.headers["content-type"].startswith("text/html")
             html = response.text
             assert '<main id="main"' in html
-            for label in ("Explorer", "Saved prospects", "Campaigns", "Draft review",
-                          "Delivery history", "System status"):
+            for label in (
+                "Overview",
+                "Explorer",
+                "Saved prospects",
+                "Campaigns",
+                "Draft review",
+                "Delivery history",
+                "System status",
+            ):
                 assert label in html
             assert "Email: dry-run only, nothing is sent" in html
             assert "Do not expose it to an untrusted network" in html
 
         empty = {
+            "/ui/overview": "Discover your first companies",
             "/ui/explorer": "No companies discovered yet",
             "/ui/prospects": "No saved prospects yet",
             "/ui/campaigns": "No campaigns yet",
@@ -89,7 +98,7 @@ async def test_ui_root_redirects_and_marks_the_current_page(ui_factory: Any) -> 
         api_root = await ui.http.get("/")
 
     assert root.status_code == bare.status_code == 303
-    assert root.headers["location"] == "/ui/explorer"
+    assert root.headers["location"] == "/ui/overview"
     assert 'href="/ui/campaigns" class="nav-link nav-link-active" aria-current="page"' in page.text
     assert api_root.json()["ui"].endswith("/ui/")
 

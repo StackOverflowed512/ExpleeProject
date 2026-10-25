@@ -378,3 +378,88 @@ def test_fragment_target_accepts_only_safe_ids() -> None:
     assert fragment_target(req(**{"hx-target": "x\" onload=\"1"})) is None
     assert fragment_target(req(**{"hx-target": "a", "hx-boosted": "true"})) is None
     assert fragment_target(_request(headers={"hx-target": "a"})) is None
+
+
+# -- Phase 7: design system and overview --------------------------------------------------
+def test_next_steps_put_uncertain_deliveries_first() -> None:
+    steps = presentation.next_steps(
+        candidates=3,
+        prospects=2,
+        campaigns=1,
+        drafts_by_state={"pending": 2, "approved": 1, "delivery_uncertain": 1, "sending": 0},
+    )
+    labels = [step.label for step in steps]
+    assert labels == [
+        "Resolve 1 delivery needing attention",
+        "Review 2 drafts awaiting approval",
+        "1 approved draft ready to dry-run or send",
+    ]
+    assert steps[0].tone == "danger" and steps[0].href == "/ui/drafts?view=attention"
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        ({"candidates": 0, "prospects": 0, "campaigns": 0}, "Discover your first companies"),
+        (
+            {"candidates": 4, "prospects": 0, "campaigns": 0},
+            "Research and qualify discovered companies",
+        ),
+        ({"candidates": 4, "prospects": 2, "campaigns": 0}, "Create your first campaign"),
+        ({"candidates": 4, "prospects": 2, "campaigns": 1}, "Generate drafts for a campaign"),
+    ],
+)
+def test_next_steps_follow_the_workflow(counts: dict[str, int], expected: str) -> None:
+    steps = presentation.next_steps(drafts_by_state={}, **counts)
+    assert [step.label for step in steps] == [expected]
+
+
+def test_next_steps_are_empty_when_nothing_is_pending() -> None:
+    steps = presentation.next_steps(
+        candidates=4, prospects=2, campaigns=1, drafts_by_state={"sent": 3}
+    )
+    assert steps == []
+
+
+def test_icons_are_decorative_inline_svg() -> None:
+    env = build_templates().env
+    macros = env.get_template("macros.html").make_module({})
+    html = str(macros.icon("drafts", "h-4 w-4"))
+    assert html.startswith('<svg class="h-4 w-4"')
+    assert 'aria-hidden="true"' in html and 'focusable="false"' in html
+    assert "style" not in html and "<script" not in html
+
+
+def test_only_forms_disable_their_submit_buttons() -> None:
+    """On <body> the attribute is inherited by links and logs htmx errors."""
+    import re as _re
+
+    for path in TEMPLATES_DIR.rglob("*.html"):
+        source = path.read_text(encoding="utf-8")
+        for form in _re.findall(r"<form\b[^>]*>", source):
+            assert "hx-disabled-elt=\"find button[type='submit']\"" in form, path
+        body = _re.search(r"<body\b[^>]*>", source)
+        if body:
+            assert "hx-disabled-elt" not in body.group(0), path
+
+
+def test_templates_never_mark_text_as_safe() -> None:
+    for path in TEMPLATES_DIR.rglob("*.html"):
+        source = path.read_text(encoding="utf-8")
+        assert "|safe" not in source.replace(" ", ""), path
+        assert "autoescape false" not in source, path
+
+
+def test_design_system_components_are_compiled() -> None:
+    css = (STATIC_DIR / "css" / "app.css").read_text(encoding="utf-8")
+    for component in (
+        ".alert-critical",
+        ".mode-chip-live",
+        ".message-sheet",
+        ".table-wrap",
+        ".empty-state",
+        ".progress",
+        ".stat-grid",
+        "prefers-reduced-motion",
+    ):
+        assert component in css, component

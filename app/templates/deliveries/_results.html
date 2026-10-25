@@ -1,26 +1,26 @@
 {% from "macros.html" import badge, empty_state, pagination with context %}
-<section id="delivery-results" class="mt-4" aria-live="polite" aria-label="Delivery attempts">
+<section id="delivery-results" class="mt-6" aria-live="polite" aria-label="Delivery attempts">
   {% if items %}
-    <div class="card overflow-x-auto">
+    <div class="table-wrap">
       <table class="table">
         <caption class="sr-only">Send attempts, newest first. Recipients are shown on each draft's page.</caption>
-        <thead><tr><th scope="col">Started</th><th scope="col">Draft</th><th scope="col">Campaign</th><th scope="col">Mode</th><th scope="col">Outcome</th><th scope="col">Details</th><th scope="col">Duration</th></tr></thead>
+        <thead><tr><th scope="col">Started</th><th scope="col">Draft</th><th scope="col" class="hidden lg:table-cell">Campaign</th><th scope="col">Mode</th><th scope="col">Outcome</th><th scope="col">Details</th><th scope="col">Duration</th></tr></thead>
         <tbody>
           {% for row in items %}
             {% set a = row.attempt %}
-            <tr>
-              <td><time datetime="{{ a.started_at.isoformat() }}">{{ a.started_at | dt }}</time></td>
-              <td><a class="link font-medium" href="/ui/drafts/{{ a.draft_id }}">#{{ a.draft_id }} · rev {{ row.draft_revision }}</a><p class="text-xs text-slate-500">{{ row.prospect_name }}</p></td>
-              <td><a class="link" href="/ui/campaigns/{{ row.campaign_id }}">{{ row.campaign_name }}</a></td>
+            <tr class="{{ 'bg-red-50/60' if a.outcome == 'uncertain' else '' }}">
+              <td class="whitespace-nowrap tabular-nums"><time datetime="{{ a.started_at.isoformat() }}">{{ a.started_at | dt }}</time></td>
+              <td class="min-w-40"><a class="link cell-title" href="/ui/drafts/{{ a.draft_id }}">#{{ a.draft_id }} · rev {{ row.draft_revision }}</a><p class="cell-sub">{{ row.prospect_name }}</p></td>
+              <td class="hidden lg:table-cell"><a class="link" href="/ui/campaigns/{{ row.campaign_id }}">{{ row.campaign_name }}</a></td>
               <td>{{ badge("attempt_mode", a.mode) }}</td>
               <td>{{ badge("attempt_outcome", a.outcome) }}</td>
-              <td class="text-xs">
-                {% if a.failure_category %}{{ failure_text(a.failure_category) }}{% endif %}
-                {% if a.provider_reference %}<p class="break-all text-slate-500">Reply: {{ a.provider_reference }}</p>{% endif %}
-                {% if a.note %}<p class="text-slate-600">Note: {{ a.note }}</p>{% endif %}
-                {% if not (a.failure_category or a.provider_reference or a.note) %}—{% endif %}
+              <td class="min-w-56 text-xs">
+                {% if a.failure_category %}<p class="text-ink-soft">{{ failure_text(a.failure_category) }}</p>{% endif %}
+                {% if a.provider_reference %}<p class="break-all text-muted">Reply: {{ a.provider_reference }}</p>{% endif %}
+                {% if a.note %}<p class="text-muted">Note: {{ a.note }}</p>{% endif %}
+                {% if not (a.failure_category or a.provider_reference or a.note) %}<span class="text-subtle">—</span>{% endif %}
               </td>
-              <td>{{ a.duration_ms | duration }}</td>
+              <td class="whitespace-nowrap tabular-nums">{{ a.duration_ms | duration }}</td>
             </tr>
           {% endfor %}
         </tbody>
@@ -28,6 +28,8 @@
     </div>
     {{ pagination(pages, "/ui/deliveries", "&outcome=" ~ (outcome | urlencode) ~ "&mode=" ~ (mode | urlencode)) }}
   {% else %}
-    {% call empty_state("No delivery attempts", "Approved drafts appear here once you record a dry run or send them.") %}{% endcall %}
+    {% call empty_state("No delivery attempts", "Approved drafts appear here once you record a dry run or send them.", "deliveries") %}
+      <a class="btn btn-secondary" href="/ui/drafts?view=approved">Approved drafts</a>
+    {% endcall %}
   {% endif %}
 </section>

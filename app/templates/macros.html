@@ -1,10 +1,45 @@
-{# Reusable UI building blocks. Every status uses a text label; color is only
-   an extra cue. #}
+{# Reusable UI building blocks. Every status uses a text label; color and icons
+   are only extra cues. Icons are decorative inline SVG (aria-hidden). #}
 
-{% macro nav_link(href, label, active, count=None) %}
+{% macro icon(name, cls="") -%}
+<svg class="{{ cls }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+{%- if name == "overview" -%}<rect x="3" y="3" width="7.5" height="9" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="5.5" rx="1.5"/><rect x="13.5" y="11.5" width="7.5" height="9.5" rx="1.5"/><rect x="3" y="15" width="7.5" height="6" rx="1.5"/>
+{%- elif name == "explorer" -%}<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>
+{%- elif name == "prospects" -%}<path d="M7 3.5h10a1 1 0 0 1 1 1V21l-6-3.5L6 21V4.5a1 1 0 0 1 1-1z"/>
+{%- elif name == "campaigns" -%}<path d="M4 10v4a1 1 0 0 0 1 1h2l5 4V5L7 9H5a1 1 0 0 0-1 1z"/><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11"/>
+{%- elif name == "drafts" -%}<path d="M4 13.5 6.2 5.6A1.5 1.5 0 0 1 7.6 4.5h8.8a1.5 1.5 0 0 1 1.4 1.1L20 13.5V18a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18z"/><path d="M4 13.5h4.5l1.5 2h4l1.5-2H20"/>
+{%- elif name == "deliveries" -%}<path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v4h4"/><path d="M12 7.5V12l3 2"/>
+{%- elif name == "system" -%}<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>
+{%- elif name == "chevron-right" -%}<path d="m9 6 6 6-6 6"/>
+{%- elif name == "arrow-right" -%}<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>
+{%- elif name == "plus" -%}<path d="M12 5v14"/><path d="M5 12h14"/>
+{%- elif name == "search" -%}<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>
+{%- elif name == "refresh" -%}<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v4.5h-4.5"/>
+{%- elif name == "check" -%}<path d="m5 12.5 4.5 4.5L19 7.5"/>
+{%- elif name == "info" -%}<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.6v.1"/>
+{%- elif name == "success" -%}<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16.5 9.5"/>
+{%- elif name == "warning" -%}<path d="M10.3 4.2 2.8 17.5A2 2 0 0 0 4.5 20.5h15a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4"/><path d="M12 17v.1"/>
+{%- elif name == "danger" -%}<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.4v.1"/>
+{%- elif name == "shield" -%}<path d="M12 3 5 6v5.5c0 4.4 3 8 7 9.5 4-1.5 7-5.1 7-9.5V6z"/><path d="m9 12 2 2 4-4"/>
+{%- elif name == "send" -%}<path d="M21 3 10 14"/><path d="m21 3-6.5 18-4.5-7-7-4.5z"/>
+{%- elif name == "mail" -%}<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>
+{%- elif name == "globe" -%}<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>
+{%- elif name == "document" -%}<path d="M14 3H7a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5V7.5z"/><path d="M14 3v4.5h4.5"/><path d="M9 13h6"/><path d="M9 16.5h4"/>
+{%- elif name == "target" -%}<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>
+{%- elif name == "users" -%}<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M21.5 20a6.5 6.5 0 0 0-4-6"/>
+{%- elif name == "database" -%}<ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13"/><path d="M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/>
+{%- elif name == "plug" -%}<path d="M9 3v5"/><path d="M15 3v5"/><path d="M6.5 8h11v3a5.5 5.5 0 0 1-11 0z"/><path d="M12 16.5V21"/>
+{%- elif name == "external" -%}<path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/>
+{%- elif name == "logo" -%}<path d="M7 5h10"/><path d="M7 12h7"/><path d="M7 19h10"/><path d="M7 5v14"/>
+{%- endif -%}
+</svg>
+{%- endmacro %}
+
+{% macro nav_link(href, label, active, icon_name, count=None) %}
   <li>
     <a href="{{ href }}" class="nav-link {{ 'nav-link-active' if active else '' }}"{% if active %} aria-current="page"{% endif %}>
-      <span>{{ label }}</span>
+      {{ icon(icon_name) }}
+      <span class="nav-label">{{ label }}</span>
       {% if count %}
         <span class="nav-count" title="Drafts whose delivery needs attention">{{ count }}<span class="sr-only"> need attention</span></span>
       {% endif %}
@@ -18,20 +53,34 @@
 {% endmacro %}
 
 {% macro alert(tone, message, title=None, role=None) %}
-  <div class="alert alert-{{ tone }}" role="{{ role or ('alert' if tone in ('danger', 'warning') else 'status') }}">
-    {% if title %}<p class="font-semibold">{{ title }}</p>{% endif %}
-    <p>{{ message }}</p>
-    {% if caller is defined %}{{ caller() }}{% endif %}
+  {% set glyph = {"neutral": "info", "info": "info", "success": "success", "warning": "warning", "danger": "danger", "critical": "warning"}.get(tone, "info") %}
+  <div class="alert alert-{{ tone }}" role="{{ role or ('alert' if tone in ('danger', 'warning', 'critical') else 'status') }}">
+    {{ icon(glyph) }}
+    <div class="alert-content">
+      {% if title %}<p class="alert-title">{{ title }}</p>{% endif %}
+      <p>{{ message }}</p>
+      {% if caller is defined %}{{ caller() }}{% endif %}
+    </div>
   </div>
 {% endmacro %}
 
-{% macro page_header(title, subtitle=None) %}
+{% macro breadcrumb(items) %}
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    {% for label, href in items %}
+      {% if not loop.first %}{{ icon("chevron-right") }}{% endif %}
+      {% if href %}<a href="{{ href }}">{{ label }}</a>{% else %}<span aria-current="page">{{ label }}</span>{% endif %}
+    {% endfor %}
+  </nav>
+{% endmacro %}
+
+{% macro page_header(title, subtitle=None, eyebrow=None) %}
   <div class="page-header">
     <div class="min-w-0">
+      {% if eyebrow %}<p class="page-eyebrow">{{ eyebrow }}</p>{% endif %}
       <h1 class="page-title">{{ title }}</h1>
       {% if subtitle %}<p class="page-subtitle">{{ subtitle }}</p>{% endif %}
     </div>
-    {% if caller is defined %}<div class="flex flex-wrap gap-2">{{ caller() }}</div>{% endif %}
+    {% if caller is defined %}<div class="page-actions">{{ caller() }}</div>{% endif %}
   </div>
 {% endmacro %}
 
@@ -47,18 +96,15 @@
 
 {% macro form_errors(errors) %}
   {% if errors %}
-    <div class="alert alert-danger" role="alert">
-      <p class="font-semibold">Please correct the highlighted fields.</p>
-      {% if errors.get("__all__") %}<p>{{ errors.get("__all__") }}</p>{% endif %}
-    </div>
+    {% call alert("danger", errors.get("__all__") or "Each field below explains what to change.", title="Please correct the highlighted fields.") %}{% endcall %}
   {% endif %}
 {% endmacro %}
 
-{% macro text_field(name, label, value, errors, type="text", help=None, required=False, attrs="") %}
-  <div>
-    <label for="{{ name }}" class="label">{{ label }}{% if required %} <span class="text-red-700" aria-hidden="true">*</span>{% endif %}</label>
+{% macro text_field(name, label, value, errors, type="text", help=None, required=False, attrs="", size="") %}
+  <div class="min-w-0">
+    <label for="{{ name }}" class="label">{{ label }}{% if required %} <span class="required" aria-hidden="true">*</span>{% endif %}</label>
     <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}"
-           class="input {{ 'input-invalid' if errors.get(name) else '' }}"
+           class="input {{ 'input-lg' if size == 'lg' else '' }} {{ 'input-invalid' if errors.get(name) else '' }}"
            {% if required %}required{% endif %}
            {% if errors.get(name) %}aria-invalid="true" aria-describedby="{{ name }}-error"{% elif help %}aria-describedby="{{ name }}-help"{% endif %}
            {{ attrs }}>
@@ -68,8 +114,8 @@
 {% endmacro %}
 
 {% macro textarea_field(name, label, value, errors, rows=3, help=None, required=False) %}
-  <div>
-    <label for="{{ name }}" class="label">{{ label }}{% if required %} <span class="text-red-700" aria-hidden="true">*</span>{% endif %}</label>
+  <div class="min-w-0">
+    <label for="{{ name }}" class="label">{{ label }}{% if required %} <span class="required" aria-hidden="true">*</span>{% endif %}</label>
     <textarea id="{{ name }}" name="{{ name }}" rows="{{ rows }}"
               class="input {{ 'input-invalid' if errors.get(name) else '' }}"
               {% if required %}required{% endif %}
@@ -79,29 +125,30 @@
   </div>
 {% endmacro %}
 
-{% macro empty_state(title, message) %}
+{% macro empty_state(title, message, icon_name="drafts") %}
   <div class="empty-state">
-    <p class="font-semibold text-slate-800">{{ title }}</p>
-    <p class="mt-1 text-sm text-slate-600">{{ message }}</p>
-    {% if caller is defined %}<div class="mt-4">{{ caller() }}</div>{% endif %}
+    <span class="empty-icon">{{ icon(icon_name) }}</span>
+    <p class="empty-title">{{ title }}</p>
+    <p class="empty-text">{{ message }}</p>
+    {% if caller is defined %}<div class="mt-5 flex flex-wrap justify-center gap-2">{{ caller() }}</div>{% endif %}
   </div>
 {% endmacro %}
 
-{% macro pagination(pages, base, extra="") %}
+{% macro pagination(pages, base, extra="", noun="result") %}
   {% if pages.total > pages.limit %}
     <nav class="pagination" aria-label="Pagination">
-      <p class="text-sm text-slate-600">Showing {{ pages.first }}–{{ pages.last }} of {{ pages.total }}</p>
+      <p class="tabular-nums">Showing <strong class="font-semibold text-ink">{{ pages.first }}–{{ pages.last }}</strong> of {{ pages.total }}</p>
       <div class="flex gap-2">
         {% if pages.prev is not none %}
-          <a class="btn btn-secondary" href="{{ base }}?offset={{ pages.prev }}{{ extra }}">Previous</a>
+          <a class="btn btn-secondary btn-sm" href="{{ base }}?offset={{ pages.prev }}{{ extra }}">Previous</a>
         {% endif %}
         {% if pages.next is not none %}
-          <a class="btn btn-secondary" href="{{ base }}?offset={{ pages.next }}{{ extra }}">Next</a>
+          <a class="btn btn-secondary btn-sm" href="{{ base }}?offset={{ pages.next }}{{ extra }}">Next</a>
         {% endif %}
       </div>
     </nav>
   {% elif pages.total %}
-    <p class="mt-3 text-sm text-slate-600">{{ pages.total }} total</p>
+    <p class="result-count">{{ pages.total }} total</p>
   {% endif %}
 {% endmacro %}
 
@@ -111,20 +158,32 @@
   {% elif url %}
     <span class="break-all">{{ url }}</span>
   {% else %}
-    <span class="text-slate-400">—</span>
+    <span class="text-subtle">—</span>
   {% endif %}
 {% endmacro %}
 
 {% macro dl_row(term, value=None) %}
   <div class="dl-row">
     <dt>{{ term }}</dt>
-    <dd>{% if caller is defined %}{{ caller() }}{% elif value is none or value == "" %}<span class="text-slate-400">—</span>{% else %}{{ value }}{% endif %}</dd>
+    <dd>{% if caller is defined %}{{ caller() }}{% elif value is none or value == "" %}<span class="text-subtle">—</span>{% else %}{{ value }}{% endif %}</dd>
   </div>
 {% endmacro %}
 
-{% macro submit(label, kind="primary", busy="Working…") %}
-  <button type="submit" class="btn btn-{{ kind }}">
-    <span class="when-idle">{{ label }}</span>
-    <span class="when-busy" aria-hidden="true">{{ busy }}</span>
+{% macro submit(label, kind="primary", busy="Working…", icon_name=None, size="") %}
+  <button type="submit" class="btn btn-{{ kind }} {{ 'btn-sm' if size == 'sm' else '' }}">
+    <span class="when-idle inline-flex items-center gap-2">{% if icon_name %}{{ icon(icon_name) }}{% endif %}{{ label }}</span>
+    <span class="when-busy" aria-hidden="true"><span class="spinner"></span>{{ busy }}</span>
   </button>
+{% endmacro %}
+
+{% macro stat(label, value, href, icon_name, note=None) %}
+  <a href="{{ href }}" class="stat">
+    <span class="stat-label">{{ icon(icon_name) }}{{ label }}</span>
+    <span class="stat-value">{{ value }}</span>
+    {% if note %}<span class="stat-note">{{ note }}</span>{% endif %}
+  </a>
+{% endmacro %}
+
+{% macro score(value, threshold) %}
+  <span class="score"><strong>{{ value }}</strong><span>/ {{ threshold }}</span></span>
 {% endmacro %}

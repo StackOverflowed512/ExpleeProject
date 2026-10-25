@@ -772,6 +772,42 @@ server-rendered pages calling existing services.
 - Full suite (`TEST_DATABASE_URL` → `explee_test`): 1037 passed. Without a
   test database: 738 passed, 299 skipped. `alembic check` is clean.
 
+**Follow-up: UI/UX overhaul (2026-10-25)**
+
+A visual redesign of every page on top of the Phase 6 architecture. This is
+not plan phase P7 (*Reliability and operations*, below), which is unchanged.
+
+- **Design system** in `app/static/src/app.css`:
+  - tokens for a warm neutral palette and an indigo-violet accent, radii,
+    shadows and focus rings;
+  - components for the shell, page headers and breadcrumbs, cards, buttons
+    (`btn-danger` only for real email), forms, filter toolbars, badges,
+    alerts (`alert-critical` for uncertain delivery), the email message
+    sheet, tables, tabs, empty states and stat cards;
+  - `prefers-reduced-motion` is honoured.
+- **Templates:** an `icon()` macro (inline SVG, `aria-hidden`); new
+  `breadcrumb`, `stat` and `score` macros; icons in alerts and empty states;
+  spinners on submit buttons; and a CSS-only page progress bar. Every
+  existing page is redesigned with its routes, form fields, HTMX targets,
+  status codes and safety wording unchanged.
+- **Overview page** (`/ui/overview`; `/ui` now redirects there): read-only
+  counts, the review queue, recent attempts and `presentation.next_steps`.
+  No backend or schema changes.
+- **Fix:** `hx-disabled-elt` moved from `<body>` to each form. Inherited by
+  links, it made HTMX log errors on every navigation.
+- **Tests:**
+  - the root redirect assertion now expects `/ui/overview`, and the page
+    sweep includes the Overview;
+  - added tests for the Overview, `next_steps`, the icon macro, no `| safe`
+    in templates, `hx-disabled-elt` on forms only, and the compiled
+    design-system classes.
+- **Results:** full suite (`TEST_DATABASE_URL` → `explee_test`) 1049 passed;
+  without a test database 748 passed, 301 skipped; `alembic check` clean.
+- **Manual check:** pages were inspected in a browser at 1100 px and 375 px
+  against `explee_test` with fake providers: no horizontal scroll, and the
+  console is clean after the `hx-disabled-elt` fix. No automated visual
+  regression or screen-reader tests exist.
+
 ## P7 — Reliability and operations
 
 **Scope:** structured request logging, provider timeouts/retries, rate-limit

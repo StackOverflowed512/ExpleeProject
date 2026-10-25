@@ -1,24 +1,26 @@
 {% from "macros.html" import csrf_input, field_error, submit with context %}
 {% set real_attempts = draft.send_attempts | selectattr("mode", "equalto", "real") | list %}
 {% set last_real = real_attempts[-1] if real_attempts else none %}
-<div class="mt-4">
+<div class="action-panel">
   <h3 class="subsection-title">Check, then record what happened</h3>
-  <ol class="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-700">
+  <ol class="mt-2 list-decimal space-y-1.5 pl-5 text-sm text-ink-soft">
     <li>Look for Message-ID <code class="break-all">{{ last_real.message_id if last_real and last_real.message_id else "(not recorded)" }}</code> in the sender's Sent folder or the mail server or relay logs.</li>
     <li>Record the verified result below. “Delivered” marks the draft sent. “Not delivered” makes it approved again so it can be sent.</li>
   </ol>
-  <form method="post" action="/ui/drafts/{{ draft.id }}/resolve" class="mt-4 space-y-4">
+  <form method="post" hx-disabled-elt="find button[type='submit']" action="/ui/drafts/{{ draft.id }}/resolve" class="mt-4 space-y-4">
     {{ csrf_input() }}
     <fieldset{% if resolve_errors.get('delivered') %} aria-describedby="delivered-error"{% endif %}>
       <legend class="label">What did you find?</legend>
-      <label class="choice mt-2">
-        <input type="radio" name="delivered" value="yes" required class="checkbox" {% if resolve_form.delivered == "yes" %}checked{% endif %}>
-        <span>I found it: it was delivered (mark as sent)</span>
-      </label>
-      <label class="choice mt-2">
-        <input type="radio" name="delivered" value="no" class="checkbox" {% if resolve_form.delivered == "no" %}checked{% endif %}>
-        <span>It was not delivered (allow sending again)</span>
-      </label>
+      <div class="mt-2 space-y-2">
+        <label class="choice border-line">
+          <input type="radio" name="delivered" value="yes" required class="checkbox" {% if resolve_form.delivered == "yes" %}checked{% endif %}>
+          <span>I found it: it was delivered (mark as sent)</span>
+        </label>
+        <label class="choice border-line">
+          <input type="radio" name="delivered" value="no" class="checkbox" {% if resolve_form.delivered == "no" %}checked{% endif %}>
+          <span>It was not delivered (allow sending again)</span>
+        </label>
+      </div>
       {{ field_error(resolve_errors, "delivered") }}
     </fieldset>
     <div>
@@ -26,7 +28,7 @@
       <textarea id="note" name="note" rows="2" maxlength="500" class="input" placeholder="Where you checked">{{ resolve_form.note }}</textarea>
       {{ field_error(resolve_errors, "note") }}
     </div>
-    <label class="choice">
+    <label class="choice border-line">
       <input type="checkbox" name="confirm_checked" value="yes" required class="checkbox">
       <span>I checked the mailbox or mail server logs myself.</span>
     </label>

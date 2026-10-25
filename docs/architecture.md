@@ -1030,6 +1030,51 @@ compiled `app/static/css/app.css` is committed, so the CLI is needed only
 after changing templates or styles. Status is never shown by color alone:
 every badge and banner has a text label.
 
+### Design system (UI overhaul)
+
+`app/static/src/app.css` is organised as **tokens → base → components**:
+
+- **Tokens (`@theme`):**
+  - a warm neutral palette (`canvas`, `surface`, `sunken`, `line`, `ink`,
+    `muted`);
+  - a restrained indigo-violet `accent` scale;
+  - two radii (`control`, `card`) and three shadows (card, raised, focus);
+  - a system font stack with no remote fonts.
+- **Components:**
+  - the shell: sidebar, grouped navigation, sticky top bar with the
+    delivery-mode chip, and a page-wide progress bar;
+  - page headers with an eyebrow and breadcrumbs;
+  - cards with a header, body and footer;
+  - buttons: primary, secondary, ghost, and `btn-danger`, which is only for
+    real email;
+  - form fields with hints and errors linked to their field, and filter
+    toolbars;
+  - badges, alerts, and `alert-critical`, reserved for uncertain or
+    interrupted delivery and never softened;
+  - the email "message sheet", tables, tabs, empty states, stat cards, and
+    the delivery timeline.
+- **Icons:** the `icon()` macro in `macros.html` draws decorative inline SVG
+  (`aria-hidden`), with no icon font or CDN. A test checks that no template
+  uses `| safe`.
+- **Loading feedback, all CSS-only:**
+  - the top progress bar appears while any non-polling HTMX request is in
+    flight (`body:has(.htmx-request)`);
+  - submit buttons swap to a spinner and their busy label;
+  - every form carries `hx-disabled-elt`, so its submit button is disabled
+    during the request. The attribute is set per form, not on `<body>`,
+    where links would inherit it and HTMX would log errors.
+- **Motion:** transitions are short (150 ms) and all motion is disabled
+  under `prefers-reduced-motion`.
+- **Layouts:** `layout-main` uses a 2/3 + 1/3 split from `xl`, and
+  `layout-review` uses halves from `lg` and a 3/5 + 2/5 split from `xl`, so
+  approval and delivery stay beside the message on laptop screens. On small
+  screens the navigation becomes a wrapping row of pills.
+- **Overview (`/ui/overview`, also where `/ui` redirects):** built from
+  existing read-only queries only: candidate, prospect and campaign
+  totals, draft counts per state, the review queue, and recent attempts.
+  Next steps come from `presentation.next_steps`, which lists only what the
+  current data supports, uncertain deliveries first.
+
 ## Non-goals
 
 - Multi-tenancy, authentication, and user management (single personal user).

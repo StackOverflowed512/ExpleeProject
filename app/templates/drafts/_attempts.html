@@ -1,22 +1,22 @@
 {% from "macros.html" import badge with context %}
 {% if draft.send_attempts %}
-  <ol class="mt-3 space-y-3">
+  <ol class="timeline">
     {% for a in draft.send_attempts | reverse %}
-      <li class="attempt">
+      <li class="attempt {{ 'border-red-300' if a.outcome == 'uncertain' else '' }}">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <p class="flex flex-wrap items-center gap-2">{{ badge("attempt_mode", a.mode) }} {{ badge("attempt_outcome", a.outcome) }}</p>
-          <time class="text-xs text-slate-600" datetime="{{ a.started_at.isoformat() }}">{{ a.started_at | dt }}</time>
+          <time class="text-xs tabular-nums text-muted" datetime="{{ a.started_at.isoformat() }}">{{ a.started_at | dt }}</time>
         </div>
-        <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-slate-700">
-          <dt class="text-slate-500">Attempt</dt><dd>#{{ a.id }} · provider <code>{{ a.provider }}</code> · {{ a.duration_ms | duration }}</dd>
-          {% if a.failure_category %}<dt class="text-slate-500">Reason</dt><dd>{{ failure_text(a.failure_category) }}</dd>{% endif %}
-          {% if a.message_id %}<dt class="text-slate-500">Message-ID</dt><dd><code class="break-all">{{ a.message_id }}</code></dd>{% endif %}
-          {% if a.provider_reference %}<dt class="text-slate-500">Server reply</dt><dd class="break-all">{{ a.provider_reference }}</dd>{% endif %}
-          {% if a.note %}<dt class="text-slate-500">Note</dt><dd>{{ a.note }}</dd>{% endif %}
+        <dl class="attempt-meta">
+          <dt>Attempt</dt><dd>#{{ a.id }} · provider <code>{{ a.provider }}</code> · {{ a.duration_ms | duration }}</dd>
+          {% if a.failure_category %}<dt>Reason</dt><dd>{{ failure_text(a.failure_category) }}</dd>{% endif %}
+          {% if a.message_id %}<dt>Message-ID</dt><dd><code class="break-all">{{ a.message_id }}</code></dd>{% endif %}
+          {% if a.provider_reference %}<dt>Server reply</dt><dd class="break-all">{{ a.provider_reference }}</dd>{% endif %}
+          {% if a.note %}<dt>Note</dt><dd>{{ a.note }}</dd>{% endif %}
         </dl>
       </li>
     {% endfor %}
   </ol>
 {% else %}
-  <p class="mt-2 text-sm text-slate-600">No attempts yet. Dry runs, real sends, and manual resolutions all appear here.</p>
+  <p class="text-sm text-muted">No attempts yet. Dry runs, real sends, and manual resolutions all appear here.</p>
 {% endif %}

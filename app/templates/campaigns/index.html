@@ -1,24 +1,24 @@
 {% extends "base.html" %}
-{% from "macros.html" import page_header, empty_state, pagination with context %}
+{% from "macros.html" import page_header, empty_state, pagination, icon with context %}
 {% block title %}Campaigns{% endblock %}
 {% block content %}
-  {% call page_header("Outreach campaigns", "Campaigns group saved prospects with the message brief used to generate drafts.") %}
-    <a class="btn btn-primary" href="/ui/campaigns/new">New campaign</a>
+  {% call page_header("Outreach campaigns", "Campaigns group saved prospects with the message brief used to generate drafts.", eyebrow="Outreach") %}
+    <a class="btn btn-primary" href="/ui/campaigns/new">{{ icon("plus") }}New campaign</a>
   {% endcall %}
 
   {% if campaigns %}
-    <div class="card overflow-x-auto">
+    <div class="table-wrap">
       <table class="table">
         <caption class="sr-only">Campaigns, newest first</caption>
-        <thead><tr><th scope="col">Campaign</th><th scope="col">Product</th><th scope="col">Tone</th><th scope="col">Prospects</th><th scope="col">Created</th></tr></thead>
+        <thead><tr><th scope="col">Campaign</th><th scope="col">Product</th><th scope="col" class="hidden sm:table-cell">Tone</th><th scope="col">Prospects</th><th scope="col">Created</th></tr></thead>
         <tbody>
           {% for c in campaigns %}
             <tr>
-              <td><a class="link font-medium" href="/ui/campaigns/{{ c.id }}">{{ c.name }}</a>{% if c.description %}<p class="text-xs text-slate-500">{{ c.description | truncate(90) }}</p>{% endif %}</td>
+              <td class="min-w-56"><a class="link-plain cell-title" href="/ui/campaigns/{{ c.id }}">{{ c.name }}</a>{% if c.description %}<p class="cell-sub">{{ c.description | truncate(90) }}</p>{% endif %}</td>
               <td>{{ c.product }}</td>
-              <td>{{ c.tone | capitalize }}</td>
-              <td>{{ c.prospect_count }}</td>
-              <td><time datetime="{{ c.created_at.isoformat() }}">{{ c.created_at | dt }}</time></td>
+              <td class="hidden sm:table-cell"><span class="badge badge-neutral">{{ c.tone | capitalize }}</span></td>
+              <td class="tabular-nums">{{ c.prospect_count }}</td>
+              <td class="whitespace-nowrap tabular-nums"><time datetime="{{ c.created_at.isoformat() }}">{{ c.created_at | dt }}</time></td>
             </tr>
           {% endfor %}
         </tbody>
@@ -26,8 +26,8 @@
     </div>
     {{ pagination(pages, "/ui/campaigns") }}
   {% else %}
-    {% call empty_state("No campaigns yet", "Create a campaign from your saved prospects, then generate drafts for review.") %}
-      <a class="btn btn-primary" href="/ui/campaigns/new">New campaign</a>
+    {% call empty_state("No campaigns yet", "Create a campaign from your saved prospects, then generate drafts for review.", "campaigns") %}
+      <a class="btn btn-primary" href="/ui/campaigns/new">{{ icon("plus") }}New campaign</a>
     {% endcall %}
   {% endif %}
 {% endblock %}
