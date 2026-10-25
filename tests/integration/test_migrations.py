@@ -21,7 +21,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.config import PROJECT_ROOT
 from app.models import Base
 
-HEAD_REVISION = "0006_check_constraint_names"
+HEAD_REVISION = "0007_approval_delivery"
+CONSTRAINT_FIX_REVISION = "0006_check_constraint_names"
 PHASE4_REVISION = "0005_campaigns_drafts"
 PHASE3_PRELIMINARY_REVISION = "0004_qualification_preliminary"
 PHASE3_REVISION = "0003_qualification_prospects"
@@ -29,6 +30,8 @@ PHASE2_REVISION = "0002_company_research"
 PHASE1_REVISION = "0001_company_candidates"
 
 _DROP_SCHEMA = text(
+    "DROP TABLE IF EXISTS email_send_attempts CASCADE; "
+    "DROP TABLE IF EXISTS draft_approvals CASCADE; "
     "DROP TABLE IF EXISTS outreach_drafts CASCADE; "
     "DROP TABLE IF EXISTS campaign_prospects CASCADE; "
     "DROP TABLE IF EXISTS campaigns CASCADE; "
@@ -700,6 +703,8 @@ def test_check_constraint_names_match_models_at_head(inspector: Engine) -> None:
         "campaigns",
         "campaign_prospects",
         "outreach_drafts",
+        "draft_approvals",
+        "email_send_attempts",
     }
     assert _database_check_names(inspector) == expected
 
@@ -771,7 +776,7 @@ def test_full_downgrade_still_works_after_rename(migration_database: str) -> Non
 
 
 def test_rename_is_a_no_op_when_names_are_already_correct(migration_database: str) -> None:
-    """A create_all database stamped at 0005 keeps its (correct) names."""
+    """A create_all database stamped at 0005 keeps its (correct) names in 0006."""
     config = _alembic_config(migration_database)
     engine = create_engine(migration_database)
     try:
@@ -781,13 +786,221 @@ def test_rename_is_a_no_op_when_names_are_already_correct(migration_database: st
         command.stamp(config, PHASE4_REVISION)
         assert _database_check_names(engine) == _model_check_names()
 
-        command.upgrade(config, "head")
+        # Only 0006 is relevant here; later revisions create tables that
+        # create_all already built.
+        command.upgrade(config, CONSTRAINT_FIX_REVISION)
         assert _database_check_names(engine) == _model_check_names()
         with engine.connect() as connection:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
+        assert revision == CONSTRAINT_FIX_REVISION
+    finally:
+        with engine.begin() as connection:
+            connection.execute(_DROP_SCHEMA)
+        command.upgrade(config, "head")
+        engine.dispose()
+
+
+# -- 0007: approvals, send attempts, delivery states -----------------------------
+def _insert_phase4_draft(connection: Connection, domain: str, revision: int = 1) -> int:
+    """Insert a Phase 4 pending draft (with campaign and saved prospect) via SQL."""
+    candidate_id = _insert_candidate(connection, domain)
+    qualification_id = connection.execute(
+        _INSERT_QUALIFICATION, {"cid": candidate_id, "status": "qualified", "score": 90}
+    ).scalar_one()
+    prospect_id = connection.execute(
+        text(
+            "INSERT INTO saved_prospects (candidate_id, qualification_id) "
+            "VALUES (:c, :q) RETURNING id"
+        ),
+        {"c": candidate_id, "q": qualification_id},
+    ).scalar_one()
+    campaign_id = connection.execute(
+        text(
+            "INSERT INTO campaigns (name, product, value_proposition, target_audience, "
+            "call_to_action, tone) VALUES ('C', 'P', 'Value proposition text', 'A', "
+            "'CTA', 'professional') RETURNING id"
+        )
+    ).scalar_one()
+    connection.execute(
+        text(
+            "INSERT INTO campaign_prospects (campaign_id, saved_prospect_id, position) "
+            "VALUES (:c, :p, 0)"
+        ),
+        {"c": campaign_id, "p": prospect_id},
+    )
+    return connection.execute(
+        text(
+            "INSERT INTO outreach_drafts (campaign_id, saved_prospect_id, revision, subject, "
+            "body, prompt_version, prompt_sha256, provider, model, generation_metadata, "
+            "provenance, generated_at) VALUES (:c, :p, :r, 'Subject', 'Body text', "
+            "'outreach-draft/v1', :h, 'fake', 'fake-drafts-1', '{\"finish_reason\": \"stop\"}', "
+            "'{\"candidate_id\": 1}', now()) RETURNING id"
+        ),
+        {"c": campaign_id, "p": prospect_id, "r": revision, "h": "a" * 64},
+    ).scalar_one()
+
+
+def test_delivery_guards_are_enforced_by_the_database(inspector: Engine) -> None:
+    with inspector.connect() as connection:
+        draft_id = _insert_phase4_draft(connection, "guards.example")
+        second_id = connection.execute(
+            text(
+                "INSERT INTO outreach_drafts (campaign_id, saved_prospect_id, revision, "
+                "subject, body, prompt_version, prompt_sha256, provider, model, "
+                "generation_metadata, provenance, generated_at) SELECT campaign_id, "
+                "saved_prospect_id, 2, subject, body, prompt_version, prompt_sha256, "
+                "provider, model, generation_metadata, provenance, generated_at "
+                "FROM outreach_drafts WHERE id = :d RETURNING id"
+            ),
+            {"d": draft_id},
+        ).scalar_one()
+        for state in ("approved", "sending", "sent", "delivery_uncertain"):
+            connection.execute(
+                text("UPDATE outreach_drafts SET state = :s WHERE id = :d"),
+                {"s": state, "d": draft_id},
+            )
+        # A second revision for the same campaign prospect cannot also be sent.
+        with pytest.raises(IntegrityError):
+            with connection.begin_nested():
+                connection.execute(
+                    text("UPDATE outreach_drafts SET state = 'sent' WHERE id = :d"),
+                    {"d": second_id},
+                )
+        with pytest.raises(IntegrityError):
+            with connection.begin_nested():
+                connection.execute(
+                    text("UPDATE outreach_drafts SET state = 'bogus' WHERE id = :d"),
+                    {"d": draft_id},
+                )
+        approval_id = connection.execute(
+            text(
+                "INSERT INTO draft_approvals (draft_id, draft_revision, recipient_email, "
+                "content_sha256, approved_by, approved_at) VALUES "
+                "(:d, 1, 'ops@acme.com', :h, 'local-operator', now()) RETURNING id"
+            ),
+            {"d": draft_id, "h": "b" * 64},
+        ).scalar_one()
+        insert_attempt = text(
+            "INSERT INTO email_send_attempts (draft_id, approval_id, mode, provider, "
+            "outcome, started_at) VALUES (:d, :a, 'real', 'smtp', 'in_progress', now())"
+        )
+        connection.execute(insert_attempt, {"d": draft_id, "a": approval_id})
+        with pytest.raises(IntegrityError):  # one in-progress attempt per draft
+            with connection.begin_nested():
+                connection.execute(insert_attempt, {"d": draft_id, "a": approval_id})
+        with pytest.raises(IntegrityError):  # a second approval for the same draft
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO draft_approvals (draft_id, draft_revision, "
+                        "recipient_email, content_sha256, approved_by, approved_at) VALUES "
+                        "(:d, 1, 'ceo@acme.com', :h, 'local-operator', now())"
+                    ),
+                    {"d": draft_id, "h": "c" * 64},
+                )
+        with pytest.raises(IntegrityError):  # dry runs cannot claim another outcome
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO email_send_attempts (draft_id, approval_id, mode, "
+                        "provider, outcome, started_at, finished_at) VALUES "
+                        "(:d, :a, 'dry_run', 'none', 'sent', now(), now())"
+                    ),
+                    {"d": draft_id, "a": approval_id},
+                )
+        # Audit history is never deleted implicitly (PR #10 P2): deleting the
+        # draft, its campaign, or the approval directly is refused.
+        campaign_id = connection.execute(
+            text("SELECT campaign_id FROM outreach_drafts WHERE id = :d"), {"d": draft_id}
+        ).scalar_one()
+        for statement, params in (
+            ("DELETE FROM outreach_drafts WHERE id = :d", {"d": draft_id}),
+            ("DELETE FROM campaigns WHERE id = :c", {"c": campaign_id}),
+            ("DELETE FROM draft_approvals WHERE id = :a", {"a": approval_id}),
+        ):
+            with pytest.raises(IntegrityError):
+                with connection.begin_nested():
+                    connection.execute(text(statement), params)
+        history = connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM draft_approvals WHERE draft_id = :d), "
+                "(SELECT count(*) FROM email_send_attempts WHERE draft_id = :d)"
+            ),
+            {"d": draft_id},
+        ).one()
+        assert tuple(history) == (1, 1)
+        connection.rollback()
+
+
+def test_upgrade_from_0006_preserves_phase4_drafts(migration_database: str) -> None:
+    config = _alembic_config(migration_database)
+    engine = create_engine(migration_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(_DROP_SCHEMA)
+        command.upgrade(config, CONSTRAINT_FIX_REVISION)
+        with engine.begin() as connection:
+            draft_id = _insert_phase4_draft(connection, "phase4-data.example")
+            before = connection.execute(
+                text(
+                    "SELECT state, subject, body, prompt_version, generation_metadata, "
+                    "provenance FROM outreach_drafts WHERE id = :d"
+                ),
+                {"d": draft_id},
+            ).one()
+
+        command.upgrade(config, "head")
+        with engine.begin() as connection:
+            after = connection.execute(
+                text(
+                    "SELECT state, subject, body, prompt_version, generation_metadata, "
+                    "provenance FROM outreach_drafts WHERE id = :d"
+                ),
+                {"d": draft_id},
+            ).one()
+            tables = set(inspect(connection).get_table_names())
+        assert tuple(after) == tuple(before)
+        assert after.state == "pending"
+        assert {"draft_approvals", "email_send_attempts"} <= tables
+
+        # All drafts still pending: the downgrade succeeds and keeps the draft.
+        command.downgrade(config, CONSTRAINT_FIX_REVISION)
+        with engine.begin() as connection:
+            tables = set(inspect(connection).get_table_names())
+            state = connection.execute(
+                text("SELECT state FROM outreach_drafts WHERE id = :d"), {"d": draft_id}
+            ).scalar_one()
+        assert not {"draft_approvals", "email_send_attempts"} & tables
+        assert state == "pending"
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+
+def test_downgrade_refuses_when_drafts_left_pending(migration_database: str) -> None:
+    config = _alembic_config(migration_database)
+    engine = create_engine(migration_database)
+    try:
+        command.upgrade(config, "head")
+        with engine.begin() as connection:
+            draft_id = _insert_phase4_draft(connection, "approved-downgrade.example")
+            connection.execute(
+                text("UPDATE outreach_drafts SET state = 'approved' WHERE id = :d"),
+                {"d": draft_id},
+            )
+        with pytest.raises(IntegrityError):
+            command.downgrade(config, CONSTRAINT_FIX_REVISION)
+        with engine.begin() as connection:
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            state = connection.execute(
+                text("SELECT state FROM outreach_drafts WHERE id = :d"), {"d": draft_id}
+            ).scalar_one()
         assert revision == HEAD_REVISION
+        assert state == "approved"
     finally:
         with engine.begin() as connection:
             connection.execute(_DROP_SCHEMA)

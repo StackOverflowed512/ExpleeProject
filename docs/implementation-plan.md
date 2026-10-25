@@ -486,13 +486,163 @@ draft generation with versioned prompts; draft states.
 **Scope:** explicit approval transition enforced by the backend; email
 provider protocol and one real adapter; send audit trail; dry-run path.
 
+**Implementation notes**
+
+- **No authentication.** Approval is an explicit, recorded action in a
+  local single-user workflow. `approved_by` is the configured
+  `APPROVAL_ACTOR` label, not a verified identity.
+- **Approval** (`app/services/approvals.py`, `draft_approvals`):
+  - `POST /drafts/{id}/approve` takes an explicit recipient and the
+    draft revision.
+  - It records the revision, the normalized recipient, a SHA-256 hash of
+    draft id, revision, recipient, subject and body, the actor, and the
+    time.
+  - The draft row is locked during approval, and a draft has at most one
+    approval (unique `draft_id`).
+  - An identical repeat returns the stored approval (200). A different
+    recipient (`draft_already_approved`) or a stale revision
+    (`draft_revision_mismatch`) is refused, never silently changed.
+  - Recipients are never guessed or discovered.
+- **Delivery** (`app/services/delivery.py`, `email_send_attempts`):
+  - `POST /drafts/{id}/send` accepts only `mode` (`dry_run` or `deliver`).
+  - The service locks the draft, checks the state, re-verifies the
+    approval and recomputes the content hash. It checks the config
+    (`EMAIL_DRY_RUN`, sender), checks that no other revision for the same
+    campaign prospect was delivered, then claims the send: an
+    `in_progress` attempt with a stable Message-ID, and the draft moves to
+    `sending`. This all happens in one transaction.
+  - The provider is then called with no transaction or row lock held
+    (only the sender's advisory-lock connection, see the second review
+    follow-up), and the result is finalized with conditional updates.
+  - A dry run records an attempt and never calls a provider.
+  - A definite failure records `failed` with a category, and the draft
+    returns to `approved` (`retry_safe: true`).
+  - A transport error after the message content was sent, or an
+    unexpected error, records `uncertain`, and the draft becomes
+    `delivery_uncertain`. It is never retried automatically.
+  - `POST /drafts/{id}/resolve-delivery` records a human-verified outcome
+    for an uncertain send, or for a `sending` claim older than 15 minutes
+    (the process died mid-send). It is refused while a sender still holds
+    the draft's PostgreSQL advisory lock, however old the claim.
+  - Repeating a send after success returns `already_sent` without calling
+    the provider.
+- **Database guards** (migration `0007_approval_delivery`):
+  - the draft state check is widened to `pending`, `approved`, `sending`,
+    `sent`, `delivery_uncertain`;
+  - a partial unique index allows only one `in_progress` attempt per
+    draft;
+  - a partial unique index allows only one delivering or delivered draft
+    per campaign prospect;
+  - CHECKs tie attempt outcomes to the mode, the finish time and the
+    failure category.
+  - Existing Phase 4 drafts stay `pending`. The downgrade refuses (and
+    rolls back) if any draft has left `pending`. Migrations `0001`–`0006`
+    were not edited.
+- **Providers:**
+  - `EmailProvider` protocol, with `FakeEmailProvider` and
+    `SmtpEmailProvider`, the latter built on stdlib `smtplib`/`ssl`/`email`.
+  - SMTP uses STARTTLS (required when selected) or implicit TLS, with
+    `ssl.create_default_context()` (certificate and hostname
+    verification), and a bounded timeout.
+  - Failures map to `email_connection_failed`, `email_tls_failed`,
+    `email_authentication_failed`, `email_timeout` and `email_rejected`.
+    Ambiguous post-DATA failures map to `email_delivery_uncertain`.
+  - Credentials, bodies and recipients are never logged; `__repr__` hides
+    the password.
+- **Safe defaults:** `EMAIL_PROVIDER=fake` and `EMAIL_DRY_RUN=true`.
+  Real delivery requires `EMAIL_PROVIDER=smtp`, `EMAIL_DRY_RUN=false`,
+  `EMAIL_SENDER` and `SMTP_HOST`. The settings are validated at startup:
+  the sender address, the host, a port of 1–65535, a timeout of
+  0–120 seconds, and the username and password set together.
+- `GET /drafts/{id}` now includes `approval` and `send_attempts`.
+
 **Exit criteria**
 
-- Sending requires a recorded human approval; the service rejects anything
-  else, regardless of caller.
-- Sends are idempotent per draft and fully audited (attempt, outcome, time).
-- Failure handling and retry policy documented and tested.
-- No email is sent in tests; the real adapter is only exercised manually.
+- [x] Sending requires a recorded approval that matches the exact draft
+      revision, recipient and content. The service enforces this for every
+      caller, and tampering with stored content or the approval is
+      refused (`approval_content_mismatch`).
+- [x] Sends are idempotent per draft and fully audited: an append-only
+      attempt row with mode, provider, outcome, failure category,
+      Message-ID, start and finish times, and duration. Two concurrent
+      sends of one draft deliver exactly once (PostgreSQL, two threads).
+- [x] Failure handling and the retry policy are documented
+      (`docs/architecture.md`, README 5f) and tested: definite failures
+      are retryable, uncertain outcomes are blocked until manually
+      resolved, and an interrupted `sending` claim is recoverable only
+      after it goes stale *and* no live sender holds the draft's lock.
+- [x] No email is sent in tests. Tests use the fake provider or a mocked
+      `smtplib` client, and a dry-run test blocks sockets to prove no
+      connection is attempted.
+- [x] Migration `0007` upgrades a `0006` database containing Phase 4
+      drafts without loss, and downgrades (automated on `explee_test`).
+      `alembic upgrade head` (`0001 -> 0007`) followed by `alembic check`
+      on a freshly reset `explee_test` reported "No new upgrade operations
+      detected" (2026-10-24).
+- [x] Full suite (2026-10-24, Python 3.14.8, PostgreSQL 17,
+      `TEST_DATABASE_URL` → `explee_test`): 922 passed, with the existing
+      Starlette/httpx deprecation warning. Without a test database:
+      688 passed, 234 skipped. Phase 4 tests that asserted "no sending
+      exists" were replaced by stricter Phase 5 equivalents (sending only
+      at `/drafts/{id}/send`; email libraries only in the SMTP adapter).
+- [x] No UI, authentication, bulk or scheduled sending, background
+      workers, contact discovery, Mistral changes, Docker, or new
+      dependencies.
+
+**Not verified**
+
+- No live SMTP delivery was performed; no SMTP server or credentials were
+  configured. The adapter is covered by mocked `smtplib` tests. The manual
+  procedure is in README 5f.
+- The configured `explee` development database was not migrated to
+  `0007`. Run `alembic upgrade head` there before using the new endpoints.
+- Concurrent sends were tested with threads, each with its own database
+  sessions, not with separate OS processes. Both go through the same
+  database row lock and unique-index conflict path.
+
+**Follow-up: PR #10 review (2026-10-25)**
+
+- **P1 fixed: the fake provider could mark a draft `sent`.** With
+  `EMAIL_PROVIDER=fake` and `EMAIL_DRY_RUN=false`, a `deliver` request
+  ran through the fake provider and recorded a real send. Providers now
+  declare `delivers_email`: `True` only for the SMTP adapter, and the
+  configured fake is always `False`. The service refuses `deliver` with
+  409 `delivery_disabled` before claiming anything, so no attempt is
+  recorded and the draft stays `approved`. Regression tests cover this at
+  the service and API level, using the provider exactly as
+  `build_email_provider` configures it.
+- **P2 fixed: audit history could be deleted by cascade.** The foreign keys
+  from `draft_approvals` and `email_send_attempts` are now
+  `ON DELETE RESTRICT`. Deleting a draft, campaign, or approval that has
+  history is refused, and a database test proves the history survives.
+  Migration `0007` was edited in place: it was unmerged, and no persistent
+  database had applied it (the dev database is at `0006`; `explee_test`
+  is rebuilt by the tests).
+- Full suite (`TEST_DATABASE_URL` → `explee_test`): 924 passed. Without a
+  test database: 688 passed, 236 skipped. `alembic upgrade head` and
+  `alembic check` on a freshly reset `explee_test`: no pending operations.
+
+**Follow-up: PR #10 second review (2026-10-25)**
+
+- **P2 fixed: a slow but live send could be resolved and sent twice.** A
+  `sending` claim older than 15 minutes was treated as interrupted, but
+  with up to 120 s per SMTP step a healthy send can run longer. Now a real
+  send holds a PostgreSQL advisory lock on the draft id for the whole
+  claim → deliver → finalize sequence. The lock is on its own autocommit
+  connection, so no transaction stays open during the network call.
+  `resolve-delivery` refuses while the lock is held. A crashed process
+  releases it automatically.
+- New tests (real PostgreSQL):
+  - a claim far past the threshold with a live, blocked sender cannot be
+    resolved, and the send then completes once;
+  - a lock held by another connection (standing in for another process)
+    blocks both send and resolve, and recovery works once it is released;
+  - the lock is released after sent, failed, and uncertain outcomes, and
+    when the claim is refused;
+  - dry runs take no lock.
+- Full suite (`TEST_DATABASE_URL` → `explee_test`): 931 passed. Without a
+  test database: 688 passed, 243 skipped. `alembic upgrade head` and
+  `alembic check` on a freshly reset `explee_test`: no pending operations.
 
 ## P6 — Web interface
 

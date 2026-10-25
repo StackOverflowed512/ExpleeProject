@@ -5,7 +5,9 @@ concrete adapters are selected in :func:`build_search_provider`. Research
 depends on :class:`app.services.providers.website.WebsiteFetcher`, selected
 in :func:`build_website_fetcher`. Outreach depends on
 :class:`app.services.providers.drafts.DraftGenerator`, selected in
-:func:`build_draft_generator`.
+:func:`build_draft_generator`. Delivery depends on
+:class:`app.services.providers.email.EmailProvider`, selected in
+:func:`build_email_provider`.
 """
 
 from __future__ import annotations
@@ -15,6 +17,9 @@ import logging
 from app.config import Settings
 from app.services.providers.drafts import DraftGenerator
 from app.services.providers.drafts_fake import FakeDraftGenerator
+from app.services.providers.email import EmailProvider
+from app.services.providers.email_fake import FakeEmailProvider
+from app.services.providers.email_smtp import SmtpEmailProvider
 from app.services.providers.fake import FakeSearchProvider
 from app.services.providers.mistral import MistralDraftGenerator
 from app.services.providers.search import SearchProvider
@@ -25,15 +30,19 @@ from app.services.providers.website_httpx import HttpxWebsiteFetcher
 
 __all__ = [
     "DraftGenerator",
+    "EmailProvider",
     "FakeDraftGenerator",
+    "FakeEmailProvider",
     "FakeSearchProvider",
     "FakeWebsiteFetcher",
     "HttpxWebsiteFetcher",
     "MistralDraftGenerator",
     "SearchProvider",
+    "SmtpEmailProvider",
     "TavilySearchProvider",
     "WebsiteFetcher",
     "build_draft_generator",
+    "build_email_provider",
     "build_search_provider",
     "build_website_fetcher",
 ]
@@ -113,3 +122,32 @@ def build_draft_generator(settings: Settings) -> DraftGenerator:
         )
 
     raise ValueError(f"Unsupported draft generator: {settings.draft_generator!r}")
+
+
+def build_email_provider(settings: Settings) -> EmailProvider:
+    """Build the provider selected by ``EMAIL_PROVIDER`` (default ``fake``).
+
+    Missing SMTP settings do not fail construction: the app starts, and a
+    real send raises ``email_not_configured``. Dry runs never call the
+    provider, and real delivery additionally requires
+    ``EMAIL_DRY_RUN=false`` (enforced by the delivery service).
+    """
+    if settings.email_provider == "fake":
+        return FakeEmailProvider()
+
+    if settings.email_provider == "smtp":
+        password = (
+            settings.smtp_password.get_secret_value()
+            if settings.smtp_password is not None
+            else None
+        )
+        return SmtpEmailProvider(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            security=settings.smtp_security,
+            username=settings.smtp_username,
+            password=password,
+            timeout_seconds=settings.smtp_timeout_seconds,
+        )
+
+    raise ValueError(f"Unsupported email provider: {settings.email_provider!r}")

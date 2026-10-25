@@ -9,6 +9,8 @@ from app.models.campaign import Campaign, CampaignProspect
 from app.models.company_candidate import CompanyCandidate
 from app.models.company_qualification import CompanyQualification
 from app.models.company_research import CompanyResearch
+from app.models.draft_approval import DraftApproval
+from app.models.email_send_attempt import EmailSendAttempt
 from app.models.outreach_draft import OutreachDraft
 from app.models.saved_prospect import SavedProspect
 
@@ -19,6 +21,8 @@ __all__ = [
     "CompanyCandidate",
     "CompanyQualification",
     "CompanyResearch",
+    "DraftApproval",
+    "EmailSendAttempt",
     "OutreachDraft",
     "SavedProspect",
 ]

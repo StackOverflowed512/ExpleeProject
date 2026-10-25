@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -29,8 +30,13 @@ class OutreachDraft(Base):
     Drafts are created complete (subject and body validated before insert)
     and are never overwritten: regeneration adds a new ``revision``. The
     composite foreign key to ``campaign_prospects`` guarantees the prospect
-    belongs to the campaign. ``state`` is limited to ``pending`` in Phase 4;
-    approval and sending are added in Phase 5.
+    belongs to the campaign.
+
+    ``state`` (Phase 5 state machine, enforced by the delivery service):
+    ``pending`` -> ``approved`` (recorded approval) -> ``sending`` (claimed
+    for one real delivery) -> ``sent`` | ``approved`` (definite failure,
+    safe to retry) | ``delivery_uncertain`` (may have been delivered; needs
+    an explicit resolution). Dry runs never change the state.
 
     Audit fields: ``prompt_version``, ``prompt_sha256`` (hash of the exact
     messages sent), ``provider``, ``model``, ``generation_metadata`` (safe
@@ -88,11 +94,25 @@ class OutreachDraft(Base):
             "revision",
             name="uq_outreach_drafts_campaign_prospect_revision",
         ),
-        CheckConstraint("state IN ('pending')", name="state_valid"),
+        CheckConstraint(
+            "state IN ('pending', 'approved', 'sending', 'sent', 'delivery_uncertain')",
+            name="state_valid",
+        ),
         CheckConstraint("revision >= 1", name="revision_positive"),
         CheckConstraint("length(btrim(subject)) > 0", name="subject_not_blank"),
         CheckConstraint("length(btrim(body)) > 0", name="body_not_blank"),
         Index("ix_outreach_drafts_saved_prospect_id", "saved_prospect_id"),
+        # At most one draft per campaign prospect may be in flight, sent, or
+        # possibly sent, so two revisions can never both email the prospect.
+        Index(
+            "uq_outreach_drafts_one_delivery_per_prospect",
+            "campaign_id",
+            "saved_prospect_id",
+            unique=True,
+            postgresql_where=text(
+                "state IN ('sending', 'sent', 'delivery_uncertain')"
+            ),
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

@@ -42,6 +42,16 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "MISTRAL_MODEL",
         "MISTRAL_TIMEOUT_SECONDS",
         "MISTRAL_MAX_RETRIES",
+        "APPROVAL_ACTOR",
+        "EMAIL_PROVIDER",
+        "EMAIL_DRY_RUN",
+        "EMAIL_SENDER",
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_SECURITY",
+        "SMTP_USERNAME",
+        "SMTP_PASSWORD",
+        "SMTP_TIMEOUT_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     get_settings.cache_clear()
@@ -60,6 +70,7 @@ def test_settings() -> Settings:
         search_provider="fake",
         website_fetcher="fake",
         draft_generator="fake",
+        email_provider="fake",
     )
 
 

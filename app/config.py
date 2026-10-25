@@ -5,7 +5,7 @@ root ``.env`` file, then from the defaults defined below. Environment
 variable names are case-insensitive and mirror the field names
 (``APP_ENV``, ``DATABASE_URL``, ``LOG_LEVEL``, ``SEARCH_PROVIDER``,
 ``TAVILY_API_KEY``, ``WEBSITE_FETCHER``, ``RESEARCH_*``, ``DRAFT_GENERATOR``,
-``MISTRAL_*``).
+``MISTRAL_*``, ``APPROVAL_ACTOR``, ``EMAIL_*``, ``SMTP_*``).
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from typing import Final, Literal
 from pydantic import Field, PostgresDsn, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.schemas.text_rules import normalize_email_address
+
 PROJECT_ROOT: Final = Path(__file__).resolve().parent.parent
 ENV_FILE: Final = PROJECT_ROOT / ".env"
 
@@ -25,6 +27,8 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 SearchProviderName = Literal["fake", "tavily"]
 WebsiteFetcherName = Literal["fake", "httpx"]
 DraftGeneratorName = Literal["fake", "mistral"]
+EmailProviderName = Literal["fake", "smtp"]
+SmtpSecurity = Literal["starttls", "ssl"]
 
 DEFAULT_DATABASE_URL: Final = (
     "postgresql+psycopg://postgres:postgres@localhost:5432/explee"
@@ -177,6 +181,79 @@ class Settings(BaseSettings):
         description="Retries for transient Mistral failures (429, 5xx, timeouts).",
     )
 
+    # --- Outreach approval and email delivery -----------------------------
+    approval_actor: str = Field(
+        default="local-operator",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._@-]*$",
+        description=(
+            "Label recorded on approvals. The app has no authentication, so this "
+            "is a configured local identifier, not a verified identity."
+        ),
+    )
+    email_provider: EmailProviderName = Field(
+        default="fake",
+        description=(
+            "Email provider for approved drafts. 'fake' records sends without "
+            "delivering anything; 'smtp' delivers through SMTP_* settings."
+        ),
+    )
+    email_dry_run: bool = Field(
+        default=True,
+        description=(
+            "When true, only dry-run sends are allowed and no provider is "
+            "contacted. Real delivery requires EMAIL_DRY_RUN=false."
+        ),
+    )
+    email_sender: str | None = Field(
+        default=None,
+        description="From address for outreach email (required for SMTP).",
+    )
+    smtp_host: str | None = Field(
+        default=None,
+        max_length=253,
+        pattern=r"^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$",
+        description="SMTP server hostname (required for SMTP).",
+    )
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_security: SmtpSecurity = Field(
+        default="starttls",
+        description=(
+            "'starttls' (typically port 587) or 'ssl' for implicit TLS (typically "
+            "465). Certificates are always verified; plaintext is not supported."
+        ),
+    )
+    smtp_username: str | None = Field(default=None, max_length=320)
+    smtp_password: SecretStr | None = Field(default=None)
+    smtp_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=120,
+        description="Socket timeout for SMTP connect and each command.",
+    )
+
+    @field_validator("email_sender", mode="before")
+    @classmethod
+    def _normalize_sender(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return normalize_email_address(stripped) if stripped else None
+        return value
+
+    @field_validator("smtp_host", "smtp_username", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @model_validator(mode="after")
+    def _check_smtp_credentials(self) -> "Settings":
+        if (self.smtp_username is None) != (self.smtp_password is None):
+            raise ValueError("SMTP_USERNAME and SMTP_PASSWORD must be set together.")
+        return self
+
     @model_validator(mode="after")
     def _check_research_timeouts(self) -> "Settings":
         if self.research_max_fetch_seconds < self.research_connect_timeout_seconds:
@@ -196,7 +273,7 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
 
-    @field_validator("tavily_api_key", "mistral_api_key", mode="before")
+    @field_validator("tavily_api_key", "mistral_api_key", "smtp_password", mode="before")
     @classmethod
     def _normalize_api_keys(cls, value: object) -> object:
         if isinstance(value, SecretStr):

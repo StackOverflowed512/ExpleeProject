@@ -7,13 +7,14 @@ Personal AI-powered sales intelligence and outreach platform. Two modules:
 - **Outreach Agent** — build campaigns from saved prospects, generate drafts,
   obtain explicit human approval, and send through a configurable provider.
 
-This repository currently contains **Phases 0, 1, 1.1, 2, 3, and 4**:
+This repository currently contains **Phases 0 through 5**:
 application skeleton, configuration, health endpoint, error contract,
 database wiring, migrations, Explorer company discovery backed by Tavily
 Search, website research and enrichment, deterministic qualification,
-saved prospects with search, and outreach campaigns with Mistral-generated
-drafts kept in `pending` state. Approval and email delivery (Phase 5) are
-not implemented, so nothing can be sent.
+saved prospects with search, outreach campaigns with Mistral-generated
+drafts, and an explicit human approval gate with audited, single-draft
+email delivery (SMTP or a fake provider, dry-run by default). The web UI
+(Phase 6) is not implemented.
 
 ## Prerequisites
 
@@ -194,6 +195,7 @@ Revisions:
 | `0004_qualification_preliminary` | P3 | widens the qualification status check to allow `preliminary` (no data changes) |
 | `0005_campaigns_drafts` | P4 | `campaigns`, `campaign_prospects` (unique per campaign), and `outreach_drafts` (`pending` only) |
 | `0006_check_constraint_names` | P4 follow-up | renames the CHECK constraints from `0002`–`0004` to the model names (no data or rule changes) |
+| `0007_approval_delivery` | P5 | `draft_approvals`, `email_send_attempts`, and the draft delivery states (existing drafts stay `pending`) |
 
 Existing Phase 1 and Phase 2 databases upgrade in place with
 `alembic upgrade head`. Every revision is additive, so existing candidates
@@ -399,8 +401,8 @@ Unknown parameters are rejected with 422.
 ## 5e. Create campaigns and generate outreach drafts
 
 Phase 4 turns saved prospects into **pending** email drafts for later human
-review. **Nothing is sent**: there is no email provider, approval endpoint,
-or sending path until Phase 5.
+review. Generation never approves or sends anything; approval and delivery
+are separate, explicit steps (see 5f).
 
 **Configure the draft generator** in `.env` (see `.env.example`):
 
@@ -490,6 +492,104 @@ provider, model, safe response metadata (response ID, finish reason, token
 usage), and provenance: candidate, qualification, research, and the
 evidence sources used.
 
+## 5f. Approve and send drafts (Phase 5)
+
+Every email needs an explicit, recorded approval of one exact draft
+revision for one recipient that **you** supply; recipients are never
+guessed. Sending then handles exactly one draft per request and audits
+every attempt. The app has **no authentication**: an approval is an
+explicit action in this local single-user workflow, recorded with the
+`APPROVAL_ACTOR` label. It does not prove anyone's identity.
+
+**Safe by default.** `EMAIL_PROVIDER=fake` and `EMAIL_DRY_RUN=true`, so a
+fresh setup can only record dry runs, and no email can leave the machine.
+The fake provider never delivers: `"mode": "deliver"` is refused with 409
+`delivery_disabled` unless `EMAIL_PROVIDER=smtp`, even with
+`EMAIL_DRY_RUN=false`, so a draft can never be marked `sent` by mistake.
+
+```powershell
+# 1. Review the draft, then approve that exact revision for a recipient you choose
+Invoke-RestMethod http://127.0.0.1:8000/drafts/1 | ConvertTo-Json -Depth 6
+$approve = @{ recipient_email = "ops@acme.com"; revision = 1 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/drafts/1/approve -ContentType "application/json" -Body $approve | ConvertTo-Json -Depth 6
+
+# 2. Dry run: records an attempt, contacts no mail server, changes nothing
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/drafts/1/send -ContentType "application/json" -Body '{"mode": "dry_run"}' | ConvertTo-Json -Depth 6
+
+# 3. Real delivery (only after the SMTP setup below)
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/drafts/1/send -ContentType "application/json" -Body '{"mode": "deliver"}' | ConvertTo-Json -Depth 6
+```
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `GET /drafts/{id}` | Draft plus `approval` and all `send_attempts` (oldest first). |
+| `POST /drafts/{id}/approve` | `{"recipient_email", "revision"}`. 201 new; 200 identical repeat; 409 `draft_already_approved` for a different recipient (generate a new revision instead), `draft_revision_mismatch`, `invalid_draft_state`. |
+| `POST /drafts/{id}/send` | `{"mode": "dry_run" \| "deliver"}` only, never a recipient or content. Returns `dry_run`, `sent`, or `already_sent` (never sends twice). |
+| `POST /drafts/{id}/resolve-delivery` | `{"delivered": true \| false, "note"?}`. Records a verified outcome after an uncertain or interrupted send. |
+
+Draft states: `pending` → `approved` → `sending` → `sent`. A definite
+failure returns the draft to `approved`, where retrying is safe. An
+uncertain outcome leaves it in `delivery_uncertain`. Only one revision per
+campaign prospect can ever be sent.
+
+**Errors.**
+
+- 409: `draft_not_approved`, `approval_content_mismatch` (the draft or
+  approval changed), `delivery_disabled` (dry-run only, or the fake provider), `delivery_in_progress`,
+  `delivery_outcome_uncertain`, `prospect_already_emailed`.
+- 503: `email_not_configured`.
+- Provider errors: `email_connection_failed`, `email_tls_failed`,
+  `email_authentication_failed`, `email_rejected` (502), `email_timeout`
+  (504), and `email_delivery_uncertain` (502). The error `details` include
+  `attempt_id` and `retry_safe`.
+
+**If a send is uncertain** (`email_delivery_uncertain`, or a draft stuck in
+`sending` for more than 15 minutes because the server process stopped
+mid-send), the message **may have been delivered** and is never retried
+automatically. While a send is still running, however slowly,
+`resolve-delivery` returns 409 `delivery_in_progress`. If the server is
+stuck, stop it first.
+
+1. Find the attempt's `message_id` in `GET /drafts/{id}`.
+2. Look for it in your Sent folder or your mail provider's logs.
+3. Record the result:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/drafts/1/resolve-delivery -ContentType "application/json" -Body '{"delivered": true, "note": "Found in Sent folder"}' | ConvertTo-Json -Depth 6
+```
+
+`delivered: false` returns the draft to `approved` so it can be sent again.
+
+**Configure real SMTP delivery** in `.env` (placeholders in `.env.example`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EMAIL_PROVIDER` | `fake` | `smtp` for real delivery |
+| `EMAIL_DRY_RUN` | `true` | must be `false` before `"mode": "deliver"` is allowed |
+| `EMAIL_SENDER` | none | From address (required) |
+| `SMTP_HOST` | none | SMTP server hostname |
+| `SMTP_PORT` | `587` | usually 587 (STARTTLS) or 465 (implicit TLS) |
+| `SMTP_SECURITY` | `starttls` | `starttls` or `ssl`; certificates are always verified, and plaintext is not supported |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | none | set both or neither |
+| `SMTP_TIMEOUT_SECONDS` | `20` | per connection and command |
+| `APPROVAL_ACTOR` | `local-operator` | label recorded on approvals |
+
+**Testing real delivery safely (manual, never automated):**
+
+1. Use a mailbox you own as the recipient, and an SMTP account or
+   sandboxed relay (for example a provider's test or sandbox mode) as the
+   sender.
+2. Set `EMAIL_PROVIDER=smtp`, `EMAIL_SENDER` and the `SMTP_*` settings, and
+   keep `EMAIL_DRY_RUN=true`. Restart the server and dry-run one approved
+   draft.
+3. Set `EMAIL_DRY_RUN=false`, restart, and send **one** approved draft with
+   `"mode": "deliver"`. Confirm it arrives, and that `GET /drafts/{id}`
+   shows a `sent` attempt with the same `message_id`.
+4. Set `EMAIL_DRY_RUN=true` again when you're done.
+
+Never commit `.env`. Automated tests use only the fake provider or a mocked
+SMTP client, and require no SMTP credentials.
+
 ## 6. Start the development server
 
 ```powershell
@@ -577,7 +677,9 @@ app/
     company_qualification.py  append-only qualification runs
     saved_prospect.py     saved prospects (one per candidate)
     campaign.py           campaigns and their selected prospects
-    outreach_draft.py     generated drafts (pending, audited)
+    outreach_draft.py     generated drafts and their delivery state
+    draft_approval.py     recorded approvals (recipient + content hash)
+    email_send_attempt.py delivery audit trail
   schemas/           Pydantic request/response schemas
   routers/           thin HTTP routes (health, discovery, research,
                      qualification, prospects, campaigns, drafts)
@@ -592,9 +694,12 @@ app/
     campaigns.py          campaigns from saved prospects
     outreach_prompt.py    versioned, deterministic draft prompt
     drafts.py             generate -> validate -> persist pending drafts
+    approvals.py          approval gate and content hash
+    delivery.py           claim -> send -> finalize; manual resolution
     providers/            SearchProvider (tavily/fake), WebsiteFetcher
                           (httpx/fake), DraftGenerator (mistral/fake),
-                          SSRF checks, HTML text
+                          EmailProvider (smtp/fake), SSRF checks,
+                          HTML text
 alembic/             migration environment (URL from app settings)
 docs/                architecture and phased plan
 scripts/             operational helpers (check_db)

@@ -25,6 +25,7 @@ from app.routers import (
 )
 from app.services.providers import (
     build_draft_generator,
+    build_email_provider,
     build_search_provider,
     build_website_fetcher,
 )
@@ -65,6 +66,7 @@ def create_app(
     search_provider: object | None = None,
     website_fetcher: object | None = None,
     draft_generator: object | None = None,
+    email_provider: object | None = None,
 ) -> FastAPI:
     """Create a configured FastAPI application.
 
@@ -73,7 +75,8 @@ def create_app(
     callers) inject a provider; by default the provider selected by
     ``SEARCH_PROVIDER`` is built from settings. ``website_fetcher`` works the
     same way for research (``WEBSITE_FETCHER``), and ``draft_generator``
-    for outreach drafts (``DRAFT_GENERATOR``). The engine is created eagerly
+    for outreach drafts (``DRAFT_GENERATOR``), and ``email_provider`` for
+    delivery (``EMAIL_PROVIDER``, default ``fake``). The engine is created eagerly
     but no database connection is opened until the first query.
     """
     resolved_settings = settings or get_settings()
@@ -96,6 +99,11 @@ def create_app(
         if draft_generator is not None
         else build_draft_generator(resolved_settings)
     )
+    mailer = (
+        email_provider
+        if email_provider is not None
+        else build_email_provider(resolved_settings)
+    )
 
     app = FastAPI(
         title="Explee API",
@@ -109,6 +117,7 @@ def create_app(
     app.state.search_provider = provider
     app.state.website_fetcher = fetcher
     app.state.draft_generator = generator
+    app.state.email_provider = mailer
 
     register_exception_handlers(app)
     app.include_router(health.router)

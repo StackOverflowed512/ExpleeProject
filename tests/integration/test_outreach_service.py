@@ -457,7 +457,7 @@ def test_draft_listing_is_ordered_and_paginated(
 
 
 # -- schema-level guarantees -----------------------------------------------------------
-def test_database_only_accepts_pending_drafts_for_campaign_prospects(
+def test_database_only_accepts_valid_drafts_for_campaign_prospects(
     db_session: Session, db_session_factory: sessionmaker[Session]
 ) -> None:
     ids = _prospects(db_session, 2)
@@ -468,7 +468,7 @@ def test_database_only_accepts_pending_drafts_for_campaign_prospects(
     with db_session_factory() as other:
         with pytest.raises(IntegrityError):
             other.execute(
-                text("UPDATE outreach_drafts SET state = 'sent' WHERE id = :id"),
+                text("UPDATE outreach_drafts SET state = 'bogus' WHERE id = :id"),
                 {"id": draft.id},
             )
         other.rollback()

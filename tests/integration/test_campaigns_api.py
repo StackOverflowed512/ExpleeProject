@@ -242,7 +242,11 @@ async def test_generate_list_and_read_drafts(
 
     assert listing.json()["total"] == 2
     assert [d["saved_prospect_id"] for d in listing.json()["items"]] == prospect_ids
-    assert one.json() == draft
+    # GET /drafts/{id} adds the Phase 5 approval and delivery audit trail.
+    detail = one.json()
+    assert {key: detail[key] for key in draft} == draft
+    assert detail["approval"] is None
+    assert detail["send_attempts"] == []
 
 
 async def test_repeat_and_regenerate(client: Any, prospect_ids: list[int]) -> None:

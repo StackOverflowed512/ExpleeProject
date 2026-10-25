@@ -70,7 +70,8 @@ def clean_database(db_engine: Engine) -> None:
     with db_engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE outreach_drafts, campaign_prospects, campaigns, "
+                "TRUNCATE email_send_attempts, draft_approvals, outreach_drafts, "
+                "campaign_prospects, campaigns, "
                 "saved_prospects, company_qualifications, company_research, "
                 "company_candidates RESTART IDENTITY"
             )

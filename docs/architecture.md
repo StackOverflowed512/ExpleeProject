@@ -479,19 +479,19 @@ qualification.
 2. **Draft generation** (P4) calls the `DraftGenerator` protocol; the Mistral
    adapter implements it, and prompts are versioned code, not database
    state. Drafts are stored in `pending` state.
-3. **Approval gate** (P5, not implemented): the backend will refuse to send
-   anything that was not explicitly approved by a recorded human action,
-   enforced in the service layer, not only in the UI.
-4. **Sending** (P5, not implemented) will go through an `EmailProvider`
-   protocol, idempotent per draft and audited (attempt, result, timestamp).
+3. **Approval gate** (P5): the backend refuses to send anything without a
+   recorded approval of that exact draft revision, recipient, and content,
+   enforced in the service layer, not only in a UI.
+4. **Sending** (P5) goes through the `EmailProvider` protocol (SMTP or
+   fake), one draft per request, idempotent per draft and audited
+   (attempt, outcome, timing). See *Email: approval and delivery (P5)*.
 
 ### Campaigns and drafts (P4)
 
 **Workflow.** Saved prospects → `POST /campaigns` → `POST
-/campaigns/{id}/drafts` → `pending` drafts for later review. Nothing in
-Phase 4 sends email: there is no email transport, approval endpoint, or
-state transition. A test also asserts that no module in `app/` imports an
-email library.
+/campaigns/{id}/drafts` → `pending` drafts for later review. Generation
+never approves or sends anything; approval and delivery are separate,
+explicit Phase 5 operations on one draft at a time.
 
 **Modules.**
 
@@ -625,7 +625,9 @@ Both cases are tested with two threads racing against PostgreSQL
 - `id`, `campaign_id`, `saved_prospect_id` (composite FK to
   `campaign_prospects`, `ON DELETE CASCADE`, so a draft's prospect always
   belongs to its campaign), and `revision` (≥ 1).
-- `state`: a check constraint allows only `'pending'` in Phase 4.
+- `state`: a check constraint allowed only `'pending'` in Phase 4; migration
+  `0007` widens it to the Phase 5 states (see *Email: approval and delivery
+  (P5)*).
 - `subject` and `body` (non-blank checks).
 - Audit trail: `prompt_version`, `prompt_sha256` (hash of the exact
   messages and parameters sent), `provider`, `model` (as reported by the
@@ -676,11 +678,220 @@ names are deterministic. Tests that need a database use a dedicated test
 database (`TEST_DATABASE_URL`, for example `explee_test`) and are skipped
 when it is unset; the application database is never touched by tests.
 
-### Email
+### Email: approval and delivery (P5)
 
-Sending is an explicit, approval-gated side effect behind an
-`EmailProvider` protocol. Dry-run and manual-send paths are expected to be
-first-class, so the same workflow can be exercised without delivering mail.
+**Workflow.** Saved prospect → campaign → draft → **human approval** →
+**send** → auditable outcome. Drafts are never approved or sent
+automatically, and each request handles exactly one draft (no bulk
+sending).
+
+**No authentication.** This is a single-user local application. Approval
+is an explicit operator action recorded with the configured
+`APPROVAL_ACTOR` label. It is **not** proof of a verified identity.
+
+**Modules.**
+
+| Module | Responsibility |
+| --- | --- |
+| `app/services/providers/email.py` | `EmailProvider` protocol, `OutgoingEmail`, `DeliveryResult`, and errors split into definite and uncertain. |
+| `app/services/providers/email_smtp.py` | Standard-library SMTP adapter (the only module allowed to import `smtplib` or `email.*`; a test enforces this). |
+| `app/services/providers/email_fake.py` | Deterministic fake; the safe default provider. |
+| `app/services/approvals.py` | Approval rules and the content hash. |
+| `app/services/delivery.py` | State machine, claim/deliver/finalize flow, manual resolution. |
+| `app/routers/drafts.py` | Thin routes: read, approve, send, resolve-delivery. |
+
+**State machine** (`outreach_drafts.state`, enforced in the service layer;
+a database CHECK limits the values):
+
+| From | Event | To |
+| --- | --- | --- |
+| `pending` | `POST /drafts/{id}/approve` | `approved` |
+| `approved` | `send` with `mode: deliver` (claim) | `sending` |
+| `sending` | provider accepted | `sent` |
+| `sending` | definite failure (nothing delivered) | `approved` (retry allowed) |
+| `sending` | uncertain outcome | `delivery_uncertain` |
+| `delivery_uncertain`, or `sending` claimed > 15 min ago | `resolve-delivery` with `delivered: true` | `sent` |
+| same | `resolve-delivery` with `delivered: false` | `approved` |
+
+Dry runs (`mode: dry_run`) are recorded, but they never change the state
+and never call a provider. A partial unique index allows at most one draft
+per campaign prospect in `sending`, `sent` or `delivery_uncertain`, so two
+revisions can never both email the same person. Every Phase 4 draft stays
+`pending`.
+
+**Approval** (`draft_approvals`, unique per draft). Request:
+`{"recipient_email", "revision"}`.
+
+- The recipient is supplied explicitly; it is never guessed, scraped or
+  looked up.
+- It is validated by a strict standard-library check: a plain
+  `local@domain` with no display names, line breaks, quoted parts or IP
+  literals. The domain is lowercased and IDNA-encoded.
+- `revision` must equal the draft's revision.
+- The approval stores `content_sha256` = SHA-256 over the draft ID,
+  revision, recipient, subject and body, plus `approved_by` and
+  `approved_at`.
+- Re-sending the identical request returns the existing approval (HTTP
+  200, `created: false`). A different recipient returns 409
+  `draft_already_approved`. To change the recipient or the message,
+  generate a new draft revision and approve that.
+- Concurrent approvals are serialized by a row lock, with the unique
+  constraint as backstop.
+
+**Send** (`POST /drafts/{id}/send`, body `{"mode": "dry_run" | "deliver"}`
+only, with unknown fields rejected). There is no way to supply a
+recipient, subject or body, so delivery always uses the approved snapshot.
+The service itself verifies, with the draft row locked, that:
+
+1. the draft exists;
+2. it is not `sent` (a repeat returns `already_sent` and the earlier
+   attempt, with no new delivery), `sending` (409 `delivery_in_progress`)
+   or `delivery_uncertain` (409 `delivery_outcome_uncertain`);
+3. a recorded approval exists (409 `draft_not_approved`), and its hash
+   still matches the draft's current revision, recipient, subject and body
+   (409 `approval_content_mismatch`; tampering with either row is caught);
+4. for `deliver`: `EMAIL_DRY_RUN=false` and a provider that really
+   delivers email (`delivers_email`; only the SMTP adapter, never the
+   fake, so a simulated send is never recorded as `sent`) (409
+   `delivery_disabled`), and `EMAIL_SENDER` is set (503
+   `email_not_configured`);
+5. no other revision for the same campaign prospect is sending, sent or
+   possibly sent (409 `prospect_already_emailed`).
+
+A real send then runs three steps:
+
+1. **Claim.** In the same transaction: state `approved → sending` and an
+   `in_progress` attempt row with a unique Message-ID
+   (`<explee.draft-{id}.attempt-{n}@sender-domain>`).
+2. **Deliver.** The provider is called with **no** database session open.
+3. **Finalize.** The attempt is completed exactly once (`UPDATE ... WHERE
+   outcome = 'in_progress'`), and the state becomes `sent`, `approved`, or
+   `delivery_uncertain`.
+
+Provider failures return the error envelope with `details.attempt_id` and
+`details.retry_safe`.
+
+**Delivery ambiguity and recovery.** Exactly-once delivery is **not**
+claimed, because SMTP cannot guarantee it. The SMTP adapter runs MAIL,
+RCPT and DATA explicitly so it can tell where a failure happened:
+
+- **Before the message content is transmitted** (connect, TLS, auth,
+  MAIL/RCPT/DATA refusal, timeouts): a definite failure. Nothing was
+  accepted, the attempt is `failed`, the state returns to `approved`, and
+  a retry is safe.
+- **An explicit non-250 reply to the end of the message:** a definite
+  rejection.
+- **A timeout, disconnect or socket error after the content was sent:**
+  `uncertain`. The server may have accepted the message, so the draft
+  becomes `delivery_uncertain` and is **never retried automatically**.
+  An unexpected provider exception is treated the same way.
+- **The process dies after claiming, or recording the outcome fails:** the
+  draft stays `sending`, and is never retried automatically either.
+
+Recovery procedure:
+
+1. Look up the attempt's `message_id` in `GET /drafts/{id}`
+   (`send_attempts`).
+2. Check the sender's Sent folder or the mail server or relay logs for
+   that Message-ID.
+3. Record the verified result with `POST /drafts/{id}/resolve-delivery`
+   and `{"delivered": true|false, "note"?: "..."}`. `true` marks the draft
+   `sent`; `false` returns it to `approved` so it can be sent again.
+
+Resolution is allowed only for `delivery_uncertain` drafts, or `sending`
+drafts whose claim is older than 15 minutes. It also requires that no
+process is still delivering the draft; otherwise it returns 409
+`delivery_in_progress`.
+
+**Sender liveness.** The age of a claim alone cannot prove that a send has
+stopped: each SMTP step may take up to `SMTP_TIMEOUT_SECONDS` (≤ 120 s), so
+a slow but healthy send can outlive any fixed threshold. So:
+
+- for the whole claim → deliver → finalize sequence, a real send holds a
+  PostgreSQL advisory lock keyed by the draft id (`pg_try_advisory_lock`,
+  namespace `DELIVERY_LOCK_NAMESPACE`);
+- the lock lives on its own autocommit pooled connection, so no
+  transaction or row lock stays open during the network call;
+- `resolve-delivery` takes the same key with `pg_try_advisory_xact_lock`
+  and refuses while the sender holds it, however old the claim;
+- a second concurrent send of the same draft is refused the same way;
+- if the process dies, PostgreSQL closes its connection and releases the
+  lock, so recovery works;
+- if releasing the lock fails, the connection is discarded rather than
+  returned to the pool;
+- dry runs take no lock.
+
+The known gap: if the database connection is cut while the app process
+keeps sending (not expected with a local database), the lock is released
+early. The stale threshold still applies in that case.
+
+When resolved, the stuck `in_progress` attempt is closed as
+`uncertain/interrupted`, and the resolution is stored as its own
+`manual_resolution` attempt.
+
+**Audit trail** (`email_send_attempts`). Rows are never deleted; one row
+per dry run, real attempt or manual resolution. The foreign keys from
+`draft_approvals` and `email_send_attempts` are `ON DELETE RESTRICT`:
+deleting a draft (or its campaign, prospect, or candidate) that has an
+approval or send history is refused instead of silently erasing the audit
+record. Purging such data is a deliberate manual step (attempts, then the
+approval, then the draft). Each row has:
+
+- the draft and approval IDs;
+- `mode` (`dry_run`, `real` or `manual_resolution`);
+- `provider`;
+- `outcome` (`in_progress`, `dry_run`, `sent`, `failed` or `uncertain`);
+- a sanitized `failure_category` (the provider error code, `interrupted`,
+  or `confirmed_not_delivered`);
+- `message_id`, `provider_reference` (the sanitized server reply, for
+  example a queue ID), an optional operator `note`;
+- `started_at`, `finished_at` and `duration_ms`.
+
+CHECK constraints tie `finished_at` to the outcome and the failure
+category to failed or uncertain outcomes, keep dry runs from recording
+another outcome, and a partial unique index allows only one `in_progress`
+attempt per draft. No credentials, raw exceptions or message bodies are
+stored.
+
+**SMTP adapter and configuration.**
+
+- **Security:** `SMTP_SECURITY` is `starttls` (the server must offer
+  STARTTLS, and the connection is upgraded before authenticating) or `ssl`
+  (implicit TLS). Both use `ssl.create_default_context()`, so certificates
+  and hostnames are always verified. There is no plaintext mode and no
+  fallback to one.
+- **Settings:**
+  - `SMTP_HOST`, `SMTP_PORT` (default 587), `SMTP_SECURITY`;
+  - `SMTP_USERNAME` and `SMTP_PASSWORD`, which must be set together;
+  - `SMTP_TIMEOUT_SECONDS` (default 20), used for connecting and each
+    command;
+  - `EMAIL_SENDER`, validated like recipients.
+- **Missing configuration** returns `email_not_configured` (503) at send
+  time; the app still starts without it.
+- **Logging:** the adapter never retries and never logs the password,
+  message content or recipient. Messages are plain-text UTF-8 MIME with
+  From, To, Subject, Date and Message-ID headers. Header values containing
+  line breaks are refused before connecting.
+- **Error codes:**
+  - `email_connection_failed`, `email_tls_failed`,
+    `email_authentication_failed` and `email_rejected` (502);
+  - `email_timeout` (504);
+  - `email_not_configured` (503);
+  - `email_delivery_uncertain` (502, not retry-safe).
+
+**Safe defaults.** `EMAIL_PROVIDER=fake` and `EMAIL_DRY_RUN=true`, so a
+fresh setup cannot deliver real email. Real delivery requires all of the
+following:
+
+- `EMAIL_PROVIDER=smtp`;
+- `EMAIL_DRY_RUN=false`;
+- `EMAIL_SENDER` and the SMTP settings;
+- an approved draft;
+- an explicit `{"mode": "deliver"}` request.
+
+With `EMAIL_PROVIDER=fake` and dry run off, "deliver" records a `sent`
+attempt with provider `fake` but delivers nothing; use that only for
+testing.
 
 ## Non-goals
 

@@ -8,8 +8,14 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.campaigns import MAX_CAMPAIGN_PROSPECTS, MAX_DB_ID
+from app.schemas.text_rules import normalize_email_address
 
-DraftState = Literal["pending"]
+# Phase 5 state machine (see app/services/delivery.py and docs/architecture.md).
+DraftState = Literal["pending", "approved", "sending", "sent", "delivery_uncertain"]
+SendMode = Literal["dry_run", "deliver"]
+AttemptMode = Literal["dry_run", "real", "manual_resolution"]
+AttemptOutcome = Literal["in_progress", "dry_run", "sent", "failed", "uncertain"]
+SendOutcome = Literal["dry_run", "sent", "already_sent"]
 GenerationOutcome = Literal["generated", "existing"]
 
 
@@ -101,3 +107,131 @@ class DraftListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# -- approval and delivery (Phase 5) ------------------------------------------
+class ApproveDraftRequest(BaseModel):
+    """Body of ``POST /drafts/{id}/approve``.
+
+    The recipient is always supplied explicitly by the operator; it is never
+    guessed or looked up. ``revision`` must equal the draft's revision, which
+    confirms the operator approves exactly the version they reviewed.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"recipient_email": "ops@acme.com", "revision": 1}]},
+    )
+
+    recipient_email: str = Field(description="Plain address, for example 'ops@acme.com'.")
+    revision: int = Field(ge=1, le=MAX_DB_ID)
+
+    @field_validator("recipient_email", mode="before")
+    @classmethod
+    def _validate_recipient(cls, value: object) -> object:
+        return normalize_email_address(value) if isinstance(value, str) else value
+
+
+class SendDraftRequest(BaseModel):
+    """Body of ``POST /drafts/{id}/send``.
+
+    There are deliberately no recipient, subject, or body fields: delivery
+    always uses the approved snapshot.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra={"examples": [{"mode": "dry_run"}]}
+    )
+
+    mode: SendMode = Field(
+        description=(
+            "'dry_run' records an attempt without contacting any provider; "
+            "'deliver' sends one real email (requires EMAIL_DRY_RUN=false)."
+        )
+    )
+
+
+class ResolveDeliveryRequest(BaseModel):
+    """Body of ``POST /drafts/{id}/resolve-delivery`` (manual recovery)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    delivered: bool = Field(
+        description=(
+            "True if the operator confirmed the message arrived (draft becomes "
+            "'sent'); false if it confirmed it did not (draft returns to "
+            "'approved' and may be sent again)."
+        )
+    )
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def _clean_note(cls, value: object) -> object:
+        if isinstance(value, str):
+            if any(ord(ch) < 0x20 and ch not in "\n\t" for ch in value):
+                raise ValueError("must not contain control characters")
+            return value.strip() or None
+        return value
+
+
+class ApprovalRecord(BaseModel):
+    """A recorded approval. ``approved_by`` is a local label, not an identity."""
+
+    id: int
+    draft_id: int
+    draft_revision: int
+    recipient_email: str
+    content_sha256: str
+    approved_by: str
+    approved_at: datetime
+    created_at: datetime
+
+
+class SendAttemptRecord(BaseModel):
+    """One audited dry run, delivery attempt, or manual resolution."""
+
+    id: int
+    draft_id: int
+    approval_id: int
+    mode: AttemptMode
+    provider: str
+    outcome: AttemptOutcome
+    failure_category: str | None = None
+    message_id: str | None = None
+    provider_reference: str | None = None
+    note: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+
+
+class DraftDetail(DraftRecord):
+    """A draft with its approval and full delivery audit trail."""
+
+    approval: ApprovalRecord | None = None
+    send_attempts: list[SendAttemptRecord] = Field(
+        description="All attempts for this draft, oldest first."
+    )
+
+
+class ApproveDraftResponse(BaseModel):
+    """Result of an approval request.
+
+    ``created`` is false when an identical approval already existed.
+    """
+
+    created: bool
+    draft: DraftDetail
+
+
+class SendDraftResponse(BaseModel):
+    """Result of a send request.
+
+    ``already_sent`` means the draft had been delivered before; nothing was
+    sent again and ``attempt`` is the earlier successful attempt.
+    """
+
+    outcome: SendOutcome
+    attempt: SendAttemptRecord
+    draft: DraftDetail
