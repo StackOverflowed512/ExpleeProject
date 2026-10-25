@@ -799,10 +799,35 @@ Recovery procedure:
    `sent`; `false` returns it to `approved` so it can be sent again.
 
 Resolution is allowed only for `delivery_uncertain` drafts, or `sending`
-drafts whose claim is older than 15 minutes (a younger claim may still be
-in flight, so it returns 409 `delivery_in_progress`). The stuck
-`in_progress` attempt is closed as `uncertain/interrupted`, and the
-resolution is stored as its own `manual_resolution` attempt.
+drafts whose claim is older than 15 minutes. It also requires that no
+process is still delivering the draft; otherwise it returns 409
+`delivery_in_progress`.
+
+**Sender liveness.** The age of a claim alone cannot prove that a send has
+stopped: each SMTP step may take up to `SMTP_TIMEOUT_SECONDS` (≤ 120 s), so
+a slow but healthy send can outlive any fixed threshold. So:
+
+- for the whole claim → deliver → finalize sequence, a real send holds a
+  PostgreSQL advisory lock keyed by the draft id (`pg_try_advisory_lock`,
+  namespace `DELIVERY_LOCK_NAMESPACE`);
+- the lock lives on its own autocommit pooled connection, so no
+  transaction or row lock stays open during the network call;
+- `resolve-delivery` takes the same key with `pg_try_advisory_xact_lock`
+  and refuses while the sender holds it, however old the claim;
+- a second concurrent send of the same draft is refused the same way;
+- if the process dies, PostgreSQL closes its connection and releases the
+  lock, so recovery works;
+- if releasing the lock fails, the connection is discarded rather than
+  returned to the pool;
+- dry runs take no lock.
+
+The known gap: if the database connection is cut while the app process
+keeps sending (not expected with a local database), the lock is released
+early. The stale threshold still applies in that case.
+
+When resolved, the stuck `in_progress` attempt is closed as
+`uncertain/interrupted`, and the resolution is stored as its own
+`manual_resolution` attempt.
 
 **Audit trail** (`email_send_attempts`). Rows are never deleted; one row
 per dry run, real attempt or manual resolution. The foreign keys from

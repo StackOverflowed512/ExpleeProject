@@ -13,7 +13,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import Engine, select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -96,9 +96,16 @@ def _send(
     mode: str = "deliver",
     dry_run_only: bool = False,
     sender: str | None = SENDER,
+    now: datetime | None = None,
 ) -> SendResult:
     return send_draft(
-        factory, provider, draft_id, mode=mode, dry_run_only=dry_run_only, sender=sender
+        factory,
+        provider,
+        draft_id,
+        mode=mode,
+        dry_run_only=dry_run_only,
+        sender=sender,
+        now=now,
     )
 
 
@@ -574,13 +581,16 @@ class BlockingProvider:
 
 
 def _send_in_thread(
-    factory: sessionmaker[Session], provider: EmailProvider, draft_id: int
+    factory: sessionmaker[Session],
+    provider: EmailProvider,
+    draft_id: int,
+    now: datetime | None = None,
 ) -> tuple[threading.Thread, dict[str, object]]:
     outcome: dict[str, object] = {}
 
     def run() -> None:
         try:
-            outcome["result"] = _send(factory, provider, draft_id)
+            outcome["result"] = _send(factory, provider, draft_id, now=now)
         except BaseException as exc:  # noqa: BLE001
             outcome["error"] = exc
 
@@ -629,3 +639,135 @@ def test_concurrent_sends_of_two_revisions_email_the_prospect_once(
     assert outcome["result"].outcome == "sent"  # type: ignore[attr-defined]
     assert provider.calls == 1
     assert _state(db_session_factory, second.id) == "approved"
+
+
+# -- sender liveness (PR #10 second review) -------------------------------------
+LOCK_KEYS = {"namespace": delivery_service.DELIVERY_LOCK_NAMESPACE}
+
+
+def _lock_is_free(engine: Engine, draft_id: int) -> bool:
+    with engine.connect() as connection:
+        params = LOCK_KEYS | {"draft_id": draft_id}
+        free = bool(
+            connection.execute(
+                text("SELECT pg_try_advisory_lock(:namespace, :draft_id)"), params
+            ).scalar_one()
+        )
+        if free:
+            connection.execute(text("SELECT pg_advisory_unlock(:namespace, :draft_id)"), params)
+        return free
+
+
+def test_a_slow_live_send_is_never_resolved_however_old_its_claim(
+    db_session: Session, db_session_factory: sessionmaker[Session], draft_id: int
+) -> None:
+    """A claim past STALE_SENDING_AFTER whose sender is still running stays locked."""
+    _approve(db_session, draft_id)
+    provider = BlockingProvider()
+    long_ago = datetime.now(UTC) - delivery_service.STALE_SENDING_AFTER - timedelta(hours=1)
+    thread, outcome = _send_in_thread(db_session_factory, provider, draft_id, now=long_ago)
+    assert provider.entered.wait(TIMEOUT)
+
+    with db_session_factory() as session:
+        with pytest.raises(DeliveryInProgressError, match="still being delivered"):
+            resolve_delivery(session, draft_id, delivered=False, note="looks stuck")
+    assert _state(db_session_factory, draft_id) == "sending"
+    assert [a.outcome for a in _attempts(db_session_factory, draft_id)] == ["in_progress"]
+
+    provider.release.set()
+    thread.join(TIMEOUT)
+    assert not thread.is_alive()
+    assert outcome["result"].outcome == "sent"  # type: ignore[attr-defined]
+    assert provider.calls == 1
+    assert [a.outcome for a in _attempts(db_session_factory, draft_id)] == ["sent"]
+    with db_session_factory() as session:
+        with pytest.raises(DeliveryNotResolvableError):
+            resolve_delivery(session, draft_id, delivered=False, note=None)
+
+
+def test_a_sender_in_another_process_blocks_send_and_resolve(
+    db_engine: Engine,
+    db_session: Session,
+    db_session_factory: sessionmaker[Session],
+    draft_id: int,
+) -> None:
+    """The lock is PostgreSQL state, so it also covers separate processes."""
+    _approve(db_session, draft_id)
+    db_session.execute(
+        update(OutreachDraft)
+        .where(OutreachDraft.id == draft_id)
+        .values(state="delivery_uncertain")
+    )
+    db_session.commit()
+    params = LOCK_KEYS | {"draft_id": draft_id}
+    with db_engine.connect() as other_process:
+        try:
+            assert other_process.execute(
+                text("SELECT pg_try_advisory_lock(:namespace, :draft_id)"), params
+            ).scalar_one()
+            with pytest.raises(DeliveryInProgressError):
+                _send(db_session_factory, ExplodingProvider(), draft_id)
+            with db_session_factory() as session:
+                with pytest.raises(DeliveryInProgressError):
+                    resolve_delivery(session, draft_id, delivered=True, note=None)
+            assert _state(db_session_factory, draft_id) == "delivery_uncertain"
+        finally:
+            # Pooled connections keep session locks, so always release it.
+            other_process.execute(text("SELECT pg_advisory_unlock_all()"))
+
+    # Once that process is gone (its lock released), recovery works.
+    with db_session_factory() as session:
+        resolve_delivery(session, draft_id, delivered=True, note="found in Sent")
+    assert _state(db_session_factory, draft_id) == "sent"
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [
+        FakeEmailProvider(delivers_email=True),
+        FakeEmailProvider(delivers_email=True, error=EmailRejectedError("refused")),
+        FakeEmailProvider(delivers_email=True, error=EmailDeliveryUncertainError("?")),
+    ],
+    ids=["sent", "failed", "uncertain"],
+)
+def test_the_sender_lock_is_released_after_every_outcome(
+    db_engine: Engine,
+    db_session: Session,
+    db_session_factory: sessionmaker[Session],
+    draft_id: int,
+    provider: FakeEmailProvider,
+) -> None:
+    _approve(db_session, draft_id)
+    try:
+        _send(db_session_factory, provider, draft_id)
+    except DeliveryFailed:
+        pass
+    assert _lock_is_free(db_engine, draft_id)
+
+
+def test_the_sender_lock_is_released_when_the_claim_is_refused(
+    db_engine: Engine, db_session_factory: sessionmaker[Session], draft_id: int
+) -> None:
+    with pytest.raises(DraftNotApprovedError):
+        _send(db_session_factory, ExplodingProvider(), draft_id)
+    assert _lock_is_free(db_engine, draft_id)
+
+
+def test_dry_runs_take_no_sender_lock(
+    db_engine: Engine,
+    db_session: Session,
+    db_session_factory: sessionmaker[Session],
+    draft_id: int,
+) -> None:
+    _approve(db_session, draft_id)
+    params = LOCK_KEYS | {"draft_id": draft_id}
+    with db_engine.connect() as other_process:
+        try:
+            assert other_process.execute(
+                text("SELECT pg_try_advisory_lock(:namespace, :draft_id)"), params
+            ).scalar_one()
+            dry = _send(db_session_factory, ExplodingProvider(), draft_id, mode="dry_run")
+            assert dry.outcome == "dry_run"
+        finally:
+            other_process.execute(text("SELECT pg_advisory_unlock_all()"))
+

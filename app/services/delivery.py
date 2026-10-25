@@ -19,14 +19,21 @@ needs ``EMAIL_DRY_RUN=false`` *and* a provider that really delivers email,
 so the fake provider can never mark a draft ``sent``); and no other
 revision for the same campaign prospect is sending, sent, or possibly sent.
 
-A real send runs in three steps so no database session is held during the
-network call:
+A real send runs in three steps so no transaction or row lock is held during
+the network call:
 
 1. Claim: lock the draft row, verify, set ``sending``, and insert an
    ``in_progress`` attempt with a unique Message-ID, in one transaction.
 2. Deliver through the injected :class:`EmailProvider`.
 3. Finalize the attempt exactly once (``UPDATE ... WHERE outcome =
    'in_progress'``) and set ``sent``, ``approved``, or ``delivery_uncertain``.
+
+Liveness: steps 1-3 run while the sender holds a PostgreSQL advisory lock
+keyed by the draft id, on a dedicated connection with no open transaction.
+:func:`resolve_delivery` refuses while that lock is held, so a slow but
+still-running send can never be resolved as "not delivered" and sent again,
+however long it takes. If the sending process dies, PostgreSQL drops its
+connection and releases the lock, and recovery becomes possible.
 
 Idempotency: a ``sent`` draft is never delivered again (``already_sent``).
 Exactly-once delivery is **not** claimed: SMTP cannot guarantee it. When the
@@ -40,10 +47,12 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -73,6 +82,12 @@ logger = logging.getLogger(__name__)
 # resolved manually; younger claims may still be in flight.
 STALE_SENDING_AFTER = timedelta(minutes=15)
 DELIVERY_STATES = ("sending", "sent", "delivery_uncertain")
+# Advisory-lock namespace ("EXPD") for "a process is delivering this draft".
+# Used with the two-key form, (namespace, draft_id).
+DELIVERY_LOCK_NAMESPACE = 0x45585044
+_TRY_SENDER_LOCK = text("SELECT pg_try_advisory_lock(:namespace, :draft_id)")
+_RELEASE_SENDER_LOCK = text("SELECT pg_advisory_unlock(:namespace, :draft_id)")
+_TRY_RESOLVER_LOCK = text("SELECT pg_try_advisory_xact_lock(:namespace, :draft_id)")
 
 
 class DraftNotApprovedError(Exception):
@@ -287,6 +302,69 @@ def send_draft(
     now: datetime | None = None,
 ) -> SendResult:
     """Dry-run or deliver one approved draft (see the module docstring)."""
+    lock = _sender_lock(session_factory, draft_id) if mode == "deliver" else nullcontext()
+    with lock:
+        return _run_send(
+            session_factory,
+            provider,
+            draft_id,
+            mode=mode,
+            dry_run_only=dry_run_only,
+            sender=sender,
+            now=now,
+        )
+
+
+@contextmanager
+def _sender_lock(session_factory: sessionmaker[Session], draft_id: int) -> Iterator[None]:
+    """Hold the draft's delivery lock for a whole real send.
+
+    The lock lives on its own autocommit connection, so no transaction or row
+    lock stays open during the network call. It is released explicitly; if
+    that fails, the connection is discarded, which releases it too.
+    """
+    params = {"namespace": DELIVERY_LOCK_NAMESPACE, "draft_id": draft_id}
+    with session_factory() as session:
+        engine = session.get_bind()
+    try:
+        connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    except SQLAlchemyError as exc:
+        logger.exception("Could not open the delivery lock connection for draft %s", draft_id)
+        raise DeliveryPersistenceError("The delivery attempt could not be recorded.") from exc
+    try:
+        try:
+            acquired = bool(connection.execute(_TRY_SENDER_LOCK, params).scalar_one())
+        except SQLAlchemyError as exc:
+            logger.exception("Could not take the delivery lock for draft %s", draft_id)
+            raise DeliveryPersistenceError(
+                "The delivery attempt could not be recorded."
+            ) from exc
+        if not acquired:
+            raise DeliveryInProgressError(
+                f"Draft {draft_id} is being delivered by another request; wait for the result."
+            )
+        try:
+            yield
+        finally:
+            try:
+                connection.execute(_RELEASE_SENDER_LOCK, params)
+            except SQLAlchemyError:
+                logger.warning("Discarding the delivery lock connection for draft %s", draft_id)
+                connection.invalidate()
+    finally:
+        connection.close()
+
+
+def _run_send(
+    session_factory: sessionmaker[Session],
+    provider: EmailProvider,
+    draft_id: int,
+    *,
+    mode: str,
+    dry_run_only: bool,
+    sender: str | None,
+    now: datetime | None,
+) -> SendResult:
     started_at = now or datetime.now(UTC)
 
     # 1. Verify and claim (or record a dry run) in one short transaction.
@@ -317,7 +395,7 @@ def send_draft(
             logger.exception("Delivery claim failed for draft %s", draft_id)
             raise DeliveryPersistenceError("The delivery attempt could not be recorded.") from exc
 
-    # 2. Deliver with no database session open.
+    # 2. Deliver with no transaction open (only the sender lock is held).
     clock = time.monotonic()
     error: EmailDeliveryError | None = None
     reference: str | None = None
@@ -400,12 +478,23 @@ def resolve_delivery(
 
     Allowed when the draft is ``delivery_uncertain``, or ``sending`` with a
     claim older than :data:`STALE_SENDING_AFTER` (the process likely died
-    mid-delivery). ``delivered=True`` marks the draft ``sent``; ``False``
-    returns it to ``approved`` so it may be sent again. The resolution is
-    stored as its own ``manual_resolution`` attempt.
+    mid-delivery). In every case it is refused while a process still holds
+    the draft's delivery lock: a slow send that is still running is never
+    resolved, however old its claim. ``delivered=True`` marks the draft
+    ``sent``; ``False`` returns it to ``approved`` so it may be sent again.
+    The resolution is stored as its own ``manual_resolution`` attempt.
     """
     current = now or datetime.now(UTC)
     try:
+        sender_alive = not session.execute(
+            _TRY_RESOLVER_LOCK,
+            {"namespace": DELIVERY_LOCK_NAMESPACE, "draft_id": draft_id},
+        ).scalar_one()
+        if sender_alive:
+            raise DeliveryInProgressError(
+                f"Draft {draft_id} is still being delivered by a running process; "
+                "wait for the result."
+            )
         draft = _lock_draft(session, draft_id)
         if draft.state == "sending":
             claim = _latest_attempt(session, draft_id, outcome="in_progress")

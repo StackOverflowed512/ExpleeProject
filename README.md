@@ -544,8 +544,11 @@ campaign prospect can ever be sent.
   `attempt_id` and `retry_safe`.
 
 **If a send is uncertain** (`email_delivery_uncertain`, or a draft stuck in
-`sending` for more than 15 minutes), the message **may have been
-delivered** and is never retried automatically.
+`sending` for more than 15 minutes because the server process stopped
+mid-send), the message **may have been delivered** and is never retried
+automatically. While a send is still running, however slowly,
+`resolve-delivery` returns 409 `delivery_in_progress`. If the server is
+stuck, stop it first.
 
 1. Find the attempt's `message_id` in `GET /drafts/{id}`.
 2. Look for it in your Sent folder or your mail provider's logs.

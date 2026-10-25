@@ -511,8 +511,9 @@ provider protocol and one real adapter; send audit trail; dry-run path.
     campaign prospect was delivered, then claims the send: an
     `in_progress` attempt with a stable Message-ID, and the draft moves to
     `sending`. This all happens in one transaction.
-  - The provider is then called with no database session held, and the
-    result is finalized with conditional updates.
+  - The provider is then called with no transaction or row lock held
+    (only the sender's advisory-lock connection, see the second review
+    follow-up), and the result is finalized with conditional updates.
   - A dry run records an attempt and never calls a provider.
   - A definite failure records `failed` with a category, and the draft
     returns to `approved` (`retry_safe: true`).
@@ -521,7 +522,8 @@ provider protocol and one real adapter; send audit trail; dry-run path.
     `delivery_uncertain`. It is never retried automatically.
   - `POST /drafts/{id}/resolve-delivery` records a human-verified outcome
     for an uncertain send, or for a `sending` claim older than 15 minutes
-    (the process died mid-send).
+    (the process died mid-send). It is refused while a sender still holds
+    the draft's PostgreSQL advisory lock, however old the claim.
   - Repeating a send after success returns `already_sent` without calling
     the provider.
 - **Database guards** (migration `0007_approval_delivery`):
@@ -568,7 +570,7 @@ provider protocol and one real adapter; send audit trail; dry-run path.
       (`docs/architecture.md`, README 5f) and tested: definite failures
       are retryable, uncertain outcomes are blocked until manually
       resolved, and an interrupted `sending` claim is recoverable only
-      after it goes stale.
+      after it goes stale *and* no live sender holds the draft's lock.
 - [x] No email is sent in tests. Tests use the fake provider or a mocked
       `smtplib` client, and a dry-run test blocks sockets to prove no
       connection is attempted.
@@ -618,6 +620,28 @@ provider protocol and one real adapter; send audit trail; dry-run path.
   is rebuilt by the tests).
 - Full suite (`TEST_DATABASE_URL` → `explee_test`): 924 passed. Without a
   test database: 688 passed, 236 skipped. `alembic upgrade head` and
+  `alembic check` on a freshly reset `explee_test`: no pending operations.
+
+**Follow-up: PR #10 second review (2026-10-25)**
+
+- **P2 fixed: a slow but live send could be resolved and sent twice.** A
+  `sending` claim older than 15 minutes was treated as interrupted, but
+  with up to 120 s per SMTP step a healthy send can run longer. Now a real
+  send holds a PostgreSQL advisory lock on the draft id for the whole
+  claim → deliver → finalize sequence. The lock is on its own autocommit
+  connection, so no transaction stays open during the network call.
+  `resolve-delivery` refuses while the lock is held. A crashed process
+  releases it automatically.
+- New tests (real PostgreSQL):
+  - a claim far past the threshold with a live, blocked sender cannot be
+    resolved, and the send then completes once;
+  - a lock held by another connection (standing in for another process)
+    blocks both send and resolve, and recovery works once it is released;
+  - the lock is released after sent, failed, and uncertain outcomes, and
+    when the claim is refused;
+  - dry runs take no lock.
+- Full suite (`TEST_DATABASE_URL` → `explee_test`): 931 passed. Without a
+  test database: 688 passed, 243 skipped. `alembic upgrade head` and
   `alembic check` on a freshly reset `explee_test`: no pending operations.
 
 ## P6 — Web interface
