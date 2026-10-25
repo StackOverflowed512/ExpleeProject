@@ -89,25 +89,49 @@ def test_openapi_documents_outreach_contract(client: TestClient) -> None:
     generate = paths["/campaigns/{campaign_id}/drafts"]["post"]["responses"]
     assert {"404", "422", "500", "502", "503", "504"} <= set(generate)
     draft = schema["components"]["schemas"]["DraftRecord"]
-    assert draft["properties"]["state"]["const"] == "pending" or draft["properties"]["state"].get(
-        "enum"
-    ) == ["pending"]
+    assert set(draft["properties"]["state"]["enum"]) == {
+        "pending",
+        "approved",
+        "sending",
+        "sent",
+        "delivery_uncertain",
+    }
 
 
-def test_no_endpoint_can_send_or_approve(client: TestClient) -> None:
+def test_sending_and_approval_exist_only_for_a_persisted_draft(client: TestClient) -> None:
+    """Phase 5: approve/send/resolve hang off an existing draft; nothing else sends."""
     paths = client.get("/openapi.json").json()["paths"]
-    for path, operations in paths.items():
+    allowed = {
+        "/drafts/{draft_id}/approve",
+        "/drafts/{draft_id}/send",
+        "/drafts/{draft_id}/resolve-delivery",
+    }
+    for path in paths:
         lowered = path.lower()
-        assert not any(word in lowered for word in ("send", "approve", "deliver", "email"))
-        for operation in operations.values():
+        if any(word in lowered for word in ("send", "approve", "deliver", "email")):
+            assert path in allowed, path
+    for path in ("/campaigns", "/campaigns/{campaign_id}/drafts"):
+        for operation in paths[path].values():
             text = (operation.get("summary", "") + operation.get("operationId", "")).lower()
             assert "send" not in text and "approve" not in text
 
 
-def test_application_code_has_no_email_transport() -> None:
-    """Phase 4 must not be able to send email, even indirectly."""
-    forbidden = {"smtplib", "email.mime", "email.message", "aiosmtplib", "sendgrid", "boto3"}
+def test_only_the_smtp_adapter_uses_email_transport() -> None:
+    """Email libraries may appear in exactly one module: the SMTP adapter."""
+    forbidden = {
+        "smtplib",
+        "email.mime",
+        "email.message",
+        "email.policy",
+        "email.utils",
+        "aiosmtplib",
+        "sendgrid",
+        "boto3",
+    }
+    adapter = PROJECT_ROOT / "app" / "services" / "providers" / "email_smtp.py"
     for path in (PROJECT_ROOT / "app").rglob("*.py"):
+        if path == adapter:
+            continue
         tree = ast.parse(Path(path).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
