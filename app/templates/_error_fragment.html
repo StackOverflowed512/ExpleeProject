@@ -1,0 +1,6 @@
+{# Error response for an HTMX fragment request: replaces only the target element. #}
+<section id="{{ target }}" class="alert alert-{{ 'warning' if status_code < 500 else 'danger' }}" role="alert">
+  <p class="font-semibold">{{ title }}</p>
+  <p>{{ message }}</p>
+  <p class="mt-2 text-xs">Status {{ status_code }} · <code>{{ code }}</code> · Reload the page to try again.</p>
+</section>

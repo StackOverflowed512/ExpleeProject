@@ -31,3 +31,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Local build tools (the Tailwind standalone CLI); never committed
+tools/

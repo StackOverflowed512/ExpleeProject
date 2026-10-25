@@ -7,14 +7,15 @@ Personal AI-powered sales intelligence and outreach platform. Two modules:
 - **Outreach Agent** — build campaigns from saved prospects, generate drafts,
   obtain explicit human approval, and send through a configurable provider.
 
-This repository currently contains **Phases 0 through 5**:
+This repository currently contains **Phases 0 through 6**:
 application skeleton, configuration, health endpoint, error contract,
 database wiring, migrations, Explorer company discovery backed by Tavily
 Search, website research and enrichment, deterministic qualification,
 saved prospects with search, outreach campaigns with Mistral-generated
-drafts, and an explicit human approval gate with audited, single-draft
-email delivery (SMTP or a fake provider, dry-run by default). The web UI
-(Phase 6) is not implemented.
+drafts, an explicit human approval gate with audited, single-draft
+email delivery (SMTP or a fake provider, dry-run by default), and a
+server-rendered web interface (Jinja2, HTMX, Tailwind CSS) at `/ui/`.
+There is no authentication: run it locally for one person only.
 
 ## Prerequisites
 
@@ -48,7 +49,9 @@ pip install -e ".[dev]"
 ```
 
 This installs the runtime and test dependencies declared in `pyproject.toml`.
-No credentials are needed for installation or tests.
+No credentials are needed for installation or tests. Phase 6 added Jinja2
+for the web interface, so an existing environment must run
+`pip install -e ".[dev]"` again.
 
 ## 3. Create the local environment file
 
@@ -596,8 +599,12 @@ SMTP client, and require no SMTP credentials.
 uvicorn app.main:app --reload
 ```
 
+- Web interface: <http://127.0.0.1:8000/ui/>
 - API docs: <http://127.0.0.1:8000/docs>
 - Health: <http://127.0.0.1:8000/health>
+
+`uvicorn` listens on `127.0.0.1` by default. Do not pass `--host 0.0.0.0`:
+the app has no authentication.
 
 Example health response:
 
@@ -612,6 +619,60 @@ Example health response:
 
 `GET /health` is a liveness check: it reports that the process is serving and
 deliberately does not query PostgreSQL.
+
+## 6b. Use the web interface (Phase 6)
+
+With the server running, open **<http://127.0.0.1:8000/ui/>**. The
+interface is served by the same process as the API. It needs no Node.js and
+no build step to run; the compiled stylesheet and HTMX are committed.
+
+> **Local, single-user tool.** There is no sign-in. Keep the server on
+> `127.0.0.1` (the default) and do not expose it to an untrusted network:
+> anyone who can reach it can approve and send drafts.
+
+| Page | What you can do |
+| --- | --- |
+| **Explorer** (`/ui/explorer`) | Search with the configured provider. Open a company to see its discovery provenance, research its stored website (or refresh it), run qualification with your criteria, read each factor's evidence, and save it once the latest run is *qualified*. |
+| **Saved prospects** (`/ui/prospects`) | Filter by text, domain, score range, and saved date; open a prospect to see its justifying qualification and research history. |
+| **Campaigns** (`/ui/campaigns`) | Create a campaign from saved prospects, then press **Generate drafts**. Generation never happens on page load and never approves or sends. |
+| **Draft review** (`/ui/drafts`) | Tabs for drafts awaiting approval, approved, needing attention, and sent. A draft page shows the exact subject and body, its provenance, the approval, the delivery controls, and every attempt. |
+| **Delivery history** (`/ui/deliveries`) | Every dry run, real send, and manual resolution, filterable by outcome and mode. |
+| **System status** (`/ui/system`) | Providers, email mode, database reachability, and migration revision. It shows only whether secrets are set, never their values. |
+
+**Approving and sending a draft** takes separate, explicit steps:
+
+1. Open the draft and read the subject and the full body.
+2. Enter the recipient yourself, tick *I reviewed…*, and press **Approve
+   this draft**. This records the approval only; nothing is sent.
+3. Press **Record a dry run** to log a simulated attempt, or, only when real
+   delivery is enabled (see 5f), tick the confirmation and press **Send
+   email**. A sent draft is never sent again.
+4. If the page says **Delivery uncertain**, the email may already have been
+   accepted. Look for the shown Message-ID in your Sent folder or mail
+   server logs, then record what you found with **Record verified
+   outcome**. Explee never resends on its own.
+
+The banner at the top of every page shows the email mode. The default,
+*dry-run only, nothing is sent*, comes from `EMAIL_PROVIDER=fake` and
+`EMAIL_DRY_RUN=true`. No new settings are needed for the UI.
+
+All forms work without JavaScript; HTMX only makes them faster. Every form
+is protected against cross-site requests. If the server restarted while a
+page was open, the next submission says the form expired: reload the page
+and submit again.
+
+**Rebuilding the stylesheet** (only after changing templates or
+`app/static/src/app.css`). The project uses the Tailwind CSS v4.3.3
+standalone executable, which needs no Node.js:
+
+1. Download `tailwindcss-windows-x64.exe` from
+   <https://github.com/tailwindlabs/tailwindcss/releases/tag/v4.3.3> into
+   `tools/tailwind/`. That folder is git-ignored. Optionally check it
+   against the release's `sha256sums.txt`.
+2. Run `python -m scripts.build_css`, or `python -m scripts.build_css
+   --watch` while editing. You can also pass `--tailwind PATH` to use the
+   executable.
+3. Commit the updated `app/static/css/app.css`.
 
 ## 7. Run tests
 
@@ -630,8 +691,11 @@ Tests are deterministic, use no network, no live database, and no Tavily or
 Mistral credentials. Tavily, the website fetcher, and the Mistral adapter
 are exercised only through HTTPX mock transports, injected DNS resolvers,
 fakes, and an HTML fixture in `tests/fixtures/websites/`. Test settings use
-`SEARCH_PROVIDER=fake`, `WEBSITE_FETCHER=fake`, and `DRAFT_GENERATOR=fake`;
-no test calls the real Mistral API. PostgreSQL-backed integration tests
+`SEARCH_PROVIDER=fake`, `WEBSITE_FETCHER=fake`, `DRAFT_GENERATOR=fake`, and
+`EMAIL_PROVIDER=fake`; no test calls the real Mistral API or sends email.
+The web interface tests drive the full app through HTTPX (pages, HTMX
+fragments, CSRF, approval and delivery flows) against the same disposable
+database. PostgreSQL-backed integration tests
 (discovery, research, qualification, campaign and draft persistence, API
 persistence, migrations) run only when
 `TEST_DATABASE_URL` points at a **disposable** database; otherwise they are
@@ -661,6 +725,13 @@ test database in pgAdmin: **Databases → Create → Database**, name
 | `DATABASE_URL must use the 'postgresql+psycopg' driver` | Replace the scheme `postgresql://` or `postgresql+psycopg2://` with `postgresql+psycopg://`. |
 | `alembic.util.exc.CommandError` with an empty URL | `.env` is missing or `DATABASE_URL` is unset. Copy `.env.example` to `.env`. |
 | Port 8000 already in use | Run `uvicorn app.main:app --reload --port 8001`. |
+| A UI page says "The database could not be reached or is not migrated" | PostgreSQL is not running, `DATABASE_URL` is wrong, or migrations are missing. Run `alembic upgrade head`; **System status** shows the current and expected revision. |
+| A UI form says it "has expired" or "security token is not valid" | The server restarted (tokens are per process) or cookies are blocked for `127.0.0.1`. Reload the page and submit again. |
+| A UI page has no styling | `/static/css/app.css` is missing. Restore it from Git, or rebuild it with `python -m scripts.build_css` (see 6b). |
+| Explorer search says the provider is not configured | Set `TAVILY_API_KEY` (or `SEARCH_PROVIDER=fake`, which returns no results) and restart. |
+| Draft generation says the provider is not configured | Set `MISTRAL_API_KEY`, or `DRAFT_GENERATOR=fake` for offline drafts, and restart. |
+| The draft page only offers a dry run | Real delivery needs `EMAIL_PROVIDER=smtp`, `EMAIL_DRY_RUN=false` and `EMAIL_SENDER`; the page lists what is missing. |
+| A draft shows **Delivery uncertain** | The message may have been accepted. Check the Message-ID in your Sent folder or mail logs, then record the outcome on the draft page (see 5f). |
 
 ## Project layout
 
@@ -683,6 +754,12 @@ app/
   schemas/           Pydantic request/response schemas
   routers/           thin HTTP routes (health, discovery, research,
                      qualification, prospects, campaigns, drafts)
+    ui/                   web interface routes under /ui
+  web/               UI infrastructure: CSRF, form parsing, rendering,
+                     security headers, presentation labels
+  templates/         Jinja2 templates (base layout, macros, pages,
+                     HTMX fragments)
+  static/            compiled Tailwind CSS, its source, vendored HTMX
   services/          business logic
     discovery.py          search -> normalize -> dedupe -> persist
     discovery_urls.py     URL/domain normalization
@@ -702,7 +779,7 @@ app/
                           HTML text
 alembic/             migration environment (URL from app settings)
 docs/                architecture and phased plan
-scripts/             operational helpers (check_db)
+scripts/             operational helpers (check_db, build_css)
 tests/unit/          fast, isolated tests
 tests/integration/   ASGI app tests; DB tests when TEST_DATABASE_URL is set
 tests/fixtures/      recorded HTML fixtures (no live websites in tests)

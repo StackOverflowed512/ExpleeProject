@@ -1,0 +1,38 @@
+{% from "macros.html" import alert, empty_state with context %}
+<section id="search-results" class="mt-6" aria-live="polite" aria-labelledby="results-heading">
+  {% if error %}
+    {% call alert("danger", error, title="The search did not complete") %}
+      {% if error_hint %}<p class="mt-1">{{ error_hint }}</p>{% endif %}
+    {% endcall %}
+  {% elif errors %}
+    {% call alert("danger", "Fix the search form and try again.", title="The search was not run") %}
+      <ul class="mt-1 list-disc pl-5">
+        {% for name, message in errors.items() %}<li>{{ {"query": "Search query", "limit": "Max results"}.get(name, "Form") }}: {{ message }}</li>{% endfor %}
+      </ul>
+    {% endcall %}
+  {% elif results is not none %}
+    <h2 id="results-heading" class="section-title">Results for “{{ results.query }}”</h2>
+    <p class="section-help">
+      {{ results.counts.returned }} returned · {{ results.counts.created }} new · {{ results.counts.updated }} updated · {{ results.counts.skipped }} skipped (provider <code>{{ results.provider }}</code>)
+    </p>
+    {% if results.results %}
+      <ul class="mt-3 grid gap-3 md:grid-cols-2">
+        {% for c in results.results %}
+          <li class="card p-4">
+            <div class="flex items-start justify-between gap-3">
+              <a class="link font-semibold" href="/ui/companies/{{ c.id }}">{{ c.name }}</a>
+              <span class="badge badge-neutral">Discovered</span>
+            </div>
+            <p class="mt-1 text-sm text-slate-600">{{ c.domain or "No domain" }}</p>
+            {% if c.description %}
+              <p class="mt-2 text-sm text-slate-700"><span class="sr-only">Search snippet: </span>{{ c.description | truncate(220) }}</p>
+            {% endif %}
+            <p class="mt-2 text-xs text-slate-500">Snippet from the search provider, not verified.</p>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      {% call empty_state("No results", "The provider returned no usable companies for this query. Try a broader query.") %}{% endcall %}
+    {% endif %}
+  {% endif %}
+</section>

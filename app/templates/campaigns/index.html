@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header, empty_state, pagination with context %}
+{% block title %}Campaigns{% endblock %}
+{% block content %}
+  {% call page_header("Outreach campaigns", "Campaigns group saved prospects with the message brief used to generate drafts.") %}
+    <a class="btn btn-primary" href="/ui/campaigns/new">New campaign</a>
+  {% endcall %}
+
+  {% if campaigns %}
+    <div class="card overflow-x-auto">
+      <table class="table">
+        <caption class="sr-only">Campaigns, newest first</caption>
+        <thead><tr><th scope="col">Campaign</th><th scope="col">Product</th><th scope="col">Tone</th><th scope="col">Prospects</th><th scope="col">Created</th></tr></thead>
+        <tbody>
+          {% for c in campaigns %}
+            <tr>
+              <td><a class="link font-medium" href="/ui/campaigns/{{ c.id }}">{{ c.name }}</a>{% if c.description %}<p class="text-xs text-slate-500">{{ c.description | truncate(90) }}</p>{% endif %}</td>
+              <td>{{ c.product }}</td>
+              <td>{{ c.tone | capitalize }}</td>
+              <td>{{ c.prospect_count }}</td>
+              <td><time datetime="{{ c.created_at.isoformat() }}">{{ c.created_at | dt }}</time></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {{ pagination(pages, "/ui/campaigns") }}
+  {% else %}
+    {% call empty_state("No campaigns yet", "Create a campaign from your saved prospects, then generate drafts for review.") %}
+      <a class="btn btn-primary" href="/ui/campaigns/new">New campaign</a>
+    {% endcall %}
+  {% endif %}
+{% endblock %}

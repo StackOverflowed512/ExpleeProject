@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header, badge, alert, csrf_input, dl_row, field_error, submit with context %}
+{% block title %}Draft #{{ draft.id }}{% endblock %}
+{% block content %}
+  <p class="breadcrumb">
+    <a class="link" href="/ui/drafts">Draft review</a> <span aria-hidden="true">/</span>
+    {% if campaign %}<a class="link" href="/ui/campaigns/{{ campaign.id }}">{{ campaign.name }}</a> <span aria-hidden="true">/</span>{% endif %}
+    Draft #{{ draft.id }}
+  </p>
+  {% call page_header("Draft #" ~ draft.id ~ " · revision " ~ draft.revision, (prospect.name if prospect else "Unknown prospect")) %}
+    {{ badge("draft_state", draft.state) }}
+  {% endcall %}
+
+  {% if error %}{{ alert("danger", error, title="That action was not completed") }}{% endif %}
+
+  <div class="grid gap-6 xl:grid-cols-5">
+    <div class="space-y-6 xl:col-span-3">
+      <section class="card p-5" aria-labelledby="message-heading">
+        <h2 id="message-heading" class="section-title">Message</h2>
+        <p class="section-help">This is the exact message an approval covers. It cannot be edited here; generate a new revision to change it.</p>
+        <dl class="dl mt-4">
+          {% call dl_row("To") %}
+            {% if draft.approval %}<strong>{{ draft.approval.recipient_email }}</strong> <span class="text-xs text-slate-500">(recorded with the approval)</span>
+            {% else %}<span class="text-slate-600">Not set yet: you enter the recipient when approving. Recipients are never guessed.</span>{% endif %}
+          {% endcall %}
+          {% call dl_row("From") %}{% if sender %}{{ sender }}{% else %}<span class="text-slate-600">EMAIL_SENDER is not configured</span>{% endif %}{% endcall %}
+          {% call dl_row("Subject") %}<strong>{{ draft.subject }}</strong>{% endcall %}
+        </dl>
+        <div class="message-body mt-4" aria-label="Message body">{{ draft.body }}</div>
+      </section>
+
+      <section class="card p-5" aria-labelledby="context-heading">
+        <h2 id="context-heading" class="section-title">Prospect and campaign</h2>
+        <dl class="dl mt-3">
+          {% call dl_row("Prospect") %}
+            {% if prospect %}<a class="link" href="/ui/prospects/{{ prospect.id }}">{{ prospect.name }}</a> · {{ prospect.domain or "no domain" }} · score {{ prospect.qualification.score }}/{{ prospect.qualification.threshold }}{% else %}—{% endif %}
+          {% endcall %}
+          {% call dl_row("Campaign") %}{% if campaign %}<a class="link" href="/ui/campaigns/{{ campaign.id }}">{{ campaign.name }}</a> · {{ campaign.product }}{% else %}—{% endif %}{% endcall %}
+          {% call dl_row("Revisions") %}
+            <ul class="space-y-1">
+              {% for r in revisions %}
+                <li>{% if r.id == draft.id %}<strong>Revision {{ r.revision }} (this draft)</strong>{% else %}<a class="link" href="/ui/drafts/{{ r.id }}">Revision {{ r.revision }}</a>{% endif %} {{ badge("draft_state", r.state) }}</li>
+              {% endfor %}
+            </ul>
+          {% endcall %}
+        </dl>
+      </section>
+
+      <section class="card p-5" aria-labelledby="provenance-heading">
+        <h2 id="provenance-heading" class="section-title">Generation provenance</h2>
+        <dl class="dl mt-3">
+          {% call dl_row("Generator") %}<code>{{ draft.provider }}</code> · model <code>{{ draft.model }}</code>{% endcall %}
+          {% call dl_row("Prompt version") %}<code>{{ draft.prompt_version }}</code>{% endcall %}
+          {% call dl_row("Prompt SHA-256") %}<code class="break-all">{{ draft.prompt_sha256 }}</code>{% endcall %}
+          {% call dl_row("Generated at") %}{{ draft.generated_at | dt }}{% endcall %}
+          {% call dl_row("Evidence used") %}qualification {{ ("#" ~ draft.qualification_id) if draft.qualification_id else "none" }} · research {{ ("#" ~ draft.research_id) if draft.research_id else "none" }}{% endcall %}
+        </dl>
+        <details class="disclosure mt-4">
+          <summary>Provider metadata and provenance</summary>
+          <pre class="prose-pre">{{ {"generation_metadata": draft.generation_metadata, "provenance": draft.provenance} | tojson(indent=2) }}</pre>
+        </details>
+      </section>
+    </div>
+
+    <div class="space-y-6 xl:col-span-2">
+      <section class="card p-5" aria-labelledby="approval-heading">
+        <h2 id="approval-heading" class="section-title"><span class="step">1</span> Approval</h2>
+        {% if draft.approval %}
+          {% set a = draft.approval %}
+          <dl class="dl mt-3">
+            {{ dl_row("Recipient", a.recipient_email) }}
+            {{ dl_row("Revision", a.draft_revision) }}
+            {% call dl_row("Approved at") %}<time datetime="{{ a.approved_at.isoformat() }}">{{ a.approved_at | dt }}</time>{% endcall %}
+            {% call dl_row("Approved by") %}{{ a.approved_by }}<p class="help">The configured label (APPROVAL_ACTOR); there is no sign-in, so it is not a verified identity.</p>{% endcall %}
+            {% call dl_row("Content hash") %}<code class="break-all text-xs">{{ a.content_sha256 }}</code>{% endcall %}
+          </dl>
+          {% if actions.approval_matches %}
+            <p class="mt-3"><span class="badge badge-success">Matches this exact content</span></p>
+          {% else %}
+            {{ alert("danger", "The recorded approval no longer matches this draft's recipient, subject, or body. Sending is blocked.", title="Approval mismatch") }}
+          {% endif %}
+        {% elif actions.can_approve %}
+          <p class="mt-2 text-sm text-slate-700">Approving records your decision for <strong>this revision, this recipient, this subject and this body</strong>. It does <strong>not</strong> send anything.</p>
+          <form method="post" action="/ui/drafts/{{ draft.id }}/approve" class="mt-4 space-y-4">
+            {{ csrf_input() }}
+            <input type="hidden" name="revision" value="{{ draft.revision }}">
+            <div>
+              <label for="recipient_email" class="label">Recipient email <span class="text-red-700" aria-hidden="true">*</span></label>
+              <input id="recipient_email" name="recipient_email" type="email" required autocomplete="off" spellcheck="false" maxlength="254"
+                     value="{{ approve_form.recipient_email }}" class="input {{ 'input-invalid' if approve_errors.get('recipient_email') else '' }}"
+                     aria-describedby="recipient-help{% if approve_errors.get('recipient_email') %} recipient_email-error{% endif %}"{% if approve_errors.get('recipient_email') %} aria-invalid="true"{% endif %}>
+              <p id="recipient-help" class="help">A real person's business address that you have verified yourself.</p>
+              {{ field_error(approve_errors, "recipient_email") }}
+              {{ field_error(approve_errors, "revision") }}
+            </div>
+            <label class="choice">
+              <input type="checkbox" name="confirm_reviewed" value="yes" required class="checkbox"{% if approve_errors.get('confirm_reviewed') %} aria-invalid="true" aria-describedby="confirm_reviewed-error"{% endif %}>
+              <span>I reviewed the recipient, the subject, and the full message body.</span>
+            </label>
+            {{ field_error(approve_errors, "confirm_reviewed") }}
+            {{ submit("Approve this draft", busy="Recording approval…") }}
+          </form>
+        {% else %}
+          <p class="mt-2 text-sm text-slate-600">This draft has no approval.</p>
+        {% endif %}
+      </section>
+
+      {% include "drafts/_delivery_panel.html" %}
+
+      <section class="card p-5" aria-labelledby="attempts-heading">
+        <h2 id="attempts-heading" class="section-title">Delivery history</h2>
+        {% include "drafts/_attempts.html" %}
+      </section>
+    </div>
+  </div>
+{% endblock %}

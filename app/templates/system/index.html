@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header, dl_row, alert with context %}
+{% block title %}System status{% endblock %}
+{% block content %}
+  {{ page_header("System status", "Read-only configuration summary. Secrets are never shown, only whether they are set. Change settings in .env and restart.") }}
+
+  {{ alert("warning", "Explee has no sign-in and is meant for one person on their own computer. Do not expose it to an untrusted network.", title="No authentication") }}
+
+  <div class="mt-6 grid gap-6 lg:grid-cols-2">
+    <section class="card p-5" aria-labelledby="app-heading">
+      <h2 id="app-heading" class="section-title">Application and database</h2>
+      <dl class="dl mt-3">
+        {% call dl_row("Status") %}<span class="badge badge-success">{{ health.status }}</span> · {{ health.service }} v{{ health.version }} · {{ health.environment }}{% endcall %}
+        {% call dl_row("Database") %}
+          {% if db_reachable %}<span class="badge badge-success">Reachable</span>{% else %}<span class="badge badge-danger">Unreachable</span><p class="help">Check DATABASE_URL and that PostgreSQL is running.</p>{% endif %}
+        {% endcall %}
+        {% call dl_row("Migration") %}
+          {% if db_revision %}<code>{{ db_revision }}</code>{% else %}<span class="text-slate-600">Unknown or not migrated</span>{% endif %}
+          {% if expected_head %}
+            {% if migrations_current %} <span class="badge badge-success">Up to date</span>{% else %} <span class="badge badge-warning">Expected {{ expected_head }}</span><p class="help">Run <code>alembic upgrade head</code>.</p>{% endif %}
+          {% endif %}
+        {% endcall %}
+      </dl>
+    </section>
+
+    <section class="card p-5" aria-labelledby="email-heading">
+      <h2 id="email-heading" class="section-title">Email delivery</h2>
+      <div class="mode-box {{ 'mode-box-live' if mode.real_enabled else 'mode-box-safe' }} mt-3">
+        <p class="font-semibold">{{ mode.title }}</p>
+        <p class="mt-1 text-sm">{{ mode.explanation }}</p>
+        {% if mode.blockers %}<ul class="mt-2 list-disc pl-5 text-sm">{% for reason in mode.blockers %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+      </div>
+      <dl class="dl mt-3">
+        {% call dl_row("Provider") %}<code>{{ config.email_provider }}</code>{% endcall %}
+        {{ dl_row("Dry-run only", "Yes" if config.email_dry_run else "No") }}
+        {{ dl_row("Sender", config.email_sender or "Not configured") }}
+        {% if config.email_provider == "smtp" %}
+          {{ dl_row("SMTP server", (config.smtp_host or "Not configured") ~ ":" ~ config.smtp_port ~ " (" ~ config.smtp_security ~ ")") }}
+          {{ dl_row("SMTP login", "Configured" if smtp_login_set else "None") }}
+        {% endif %}
+        {{ dl_row("Approval label", config.approval_actor) }}
+      </dl>
+    </section>
+
+    <section class="card p-5" aria-labelledby="providers-heading">
+      <h2 id="providers-heading" class="section-title">Providers</h2>
+      <dl class="dl mt-3">
+        {% call dl_row("Search") %}<code>{{ config.search_provider }}</code>{% if config.search_provider == "tavily" %} · API key {{ "set" if tavily_key_set else "missing" }}{% endif %}{% endcall %}
+        {% call dl_row("Website fetcher") %}<code>{{ config.website_fetcher }}</code> · research reused for {{ config.research_freshness_hours }} h{% endcall %}
+        {% call dl_row("Draft generator") %}<code>{{ config.draft_generator }}</code>{% if config.draft_generator == "mistral" %} · model <code>{{ config.mistral_model }}</code> · API key {{ "set" if mistral_key_set else "missing" }}{% endif %}{% endcall %}
+      </dl>
+    </section>
+  </div>
+{% endblock %}
