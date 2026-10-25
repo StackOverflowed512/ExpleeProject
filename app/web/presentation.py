@@ -282,3 +282,96 @@ def research_notice(outcome: str, *, reused: bool) -> str:
         return "research_reused"
     code = f"research_{outcome}"
     return code if code in NOTICES else "research_done"
+
+
+@dataclass(frozen=True)
+class NextStep:
+    """A suggested action on the overview page, derived from real counts."""
+
+    label: str
+    detail: str
+    href: str
+    tone: Tone
+
+
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def next_steps(
+    *,
+    candidates: int,
+    prospects: int,
+    campaigns: int,
+    drafts_by_state: dict[str, int],
+) -> list[NextStep]:
+    """Suggested next actions, most urgent first. Only states that exist."""
+    steps: list[NextStep] = []
+    attention = drafts_by_state.get("delivery_uncertain", 0) + drafts_by_state.get("sending", 0)
+    pending = drafts_by_state.get("pending", 0)
+    approved = drafts_by_state.get("approved", 0)
+    total_drafts = sum(drafts_by_state.values())
+    if attention:
+        steps.append(
+            NextStep(
+                f"Resolve {_plural(attention, 'delivery', 'deliveries')} needing attention",
+                "Delivery is uncertain or was interrupted. Check before sending anything again.",
+                "/ui/drafts?view=attention",
+                "danger",
+            )
+        )
+    if pending:
+        steps.append(
+            NextStep(
+                f"Review {_plural(pending, 'draft')} awaiting approval",
+                "Read each message and approve it for one recipient you have verified.",
+                "/ui/drafts?view=review",
+                "info",
+            )
+        )
+    if approved:
+        steps.append(
+            NextStep(
+                f"{_plural(approved, 'approved draft')} ready to dry-run or send",
+                "Approved drafts are never sent until you choose to.",
+                "/ui/drafts?view=approved",
+                "neutral",
+            )
+        )
+    if not candidates:
+        steps.append(
+            NextStep(
+                "Discover your first companies",
+                "Search for companies that match your target market.",
+                "/ui/explorer",
+                "neutral",
+            )
+        )
+    elif not prospects:
+        steps.append(
+            NextStep(
+                "Research and qualify discovered companies",
+                "Only qualified companies can be saved as prospects.",
+                "/ui/explorer",
+                "neutral",
+            )
+        )
+    elif not campaigns:
+        steps.append(
+            NextStep(
+                "Create your first campaign",
+                "Group saved prospects with a brief to generate drafts.",
+                "/ui/campaigns/new",
+                "neutral",
+            )
+        )
+    elif not total_drafts:
+        steps.append(
+            NextStep(
+                "Generate drafts for a campaign",
+                "Drafts are created for review; generation never sends anything.",
+                "/ui/campaigns",
+                "neutral",
+            )
+        )
+    return steps

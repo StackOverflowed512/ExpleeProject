@@ -12,7 +12,15 @@ from __future__ import annotations
 from fastapi import APIRouter
 from starlette.responses import RedirectResponse
 
-from app.routers.ui import campaigns, deliveries, drafts, explorer, prospects, system
+from app.routers.ui import (
+    campaigns,
+    deliveries,
+    drafts,
+    explorer,
+    overview,
+    prospects,
+    system,
+)
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 
@@ -20,8 +28,8 @@ router = APIRouter(prefix="/ui", include_in_schema=False)
 @router.get("")
 @router.get("/")
 def ui_home() -> RedirectResponse:
-    return RedirectResponse("/ui/explorer", status_code=303)
+    return RedirectResponse("/ui/overview", status_code=303)
 
 
-for module in (explorer, prospects, campaigns, drafts, deliveries, system):
+for module in (overview, explorer, prospects, campaigns, drafts, deliveries, system):
     router.include_router(module.router)

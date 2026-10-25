@@ -1,23 +1,25 @@
-{% from "macros.html" import badge, alert, empty_state with context %}
+{% from "macros.html" import badge, alert, empty_state, icon, score with context %}
 <section id="prospect-results" class="mt-6" aria-live="polite" aria-label="Saved prospect results">
   {% if errors %}
     {% call alert("danger", "The filters are not valid, so no results are shown.", title="Check the filters") %}
       <ul class="mt-1 list-disc pl-5">{% for name, message in errors.items() %}<li>{{ message }}</li>{% endfor %}</ul>
     {% endcall %}
   {% elif items %}
-    <div class="card overflow-x-auto">
+    <div class="table-wrap">
       <table class="table">
         <caption class="sr-only">Saved prospects</caption>
-        <thead><tr><th scope="col">Company</th><th scope="col">Domain</th><th scope="col">Qualification</th><th scope="col">Score</th><th scope="col">Rules</th><th scope="col">Saved</th></tr></thead>
+        <thead><tr><th scope="col">Company</th><th scope="col">Qualification</th><th scope="col">Score</th><th scope="col" class="hidden md:table-cell">Rules</th><th scope="col">Saved</th></tr></thead>
         <tbody>
           {% for p in items %}
             <tr>
-              <td><a class="link font-medium" href="/ui/prospects/{{ p.id }}">{{ p.name }}</a></td>
-              <td>{{ p.domain or "—" }}</td>
+              <td>
+                <a class="link-plain cell-title" href="/ui/prospects/{{ p.id }}">{{ p.name }}</a>
+                <p class="cell-sub">{{ p.domain or "No domain" }}</p>
+              </td>
               <td>{{ badge("qualification_status", p.qualification.status) }}</td>
-              <td>{{ p.qualification.score }} <span class="text-slate-500">/ {{ p.qualification.threshold }}</span></td>
-              <td><code>{{ p.qualification.rule_version }}</code></td>
-              <td><time datetime="{{ p.saved_at.isoformat() }}">{{ p.saved_at | dt }}</time></td>
+              <td>{{ score(p.qualification.score, p.qualification.threshold) }}</td>
+              <td class="hidden md:table-cell"><code>{{ p.qualification.rule_version }}</code></td>
+              <td class="whitespace-nowrap tabular-nums"><time datetime="{{ p.saved_at.isoformat() }}">{{ p.saved_at | dt }}</time></td>
             </tr>
           {% endfor %}
         </tbody>
@@ -25,19 +27,19 @@
     </div>
     {% if pages.total > pages.limit %}
       <nav class="pagination" aria-label="Pagination">
-        <p class="text-sm text-slate-600">Showing {{ pages.first }}–{{ pages.last }} of {{ pages.total }}</p>
+        <p class="tabular-nums">Showing <strong class="font-semibold text-ink">{{ pages.first }}–{{ pages.last }}</strong> of {{ pages.total }}</p>
         <div class="flex gap-2">
           {% set qs = "&q=" ~ (filters.q | urlencode) ~ "&domain=" ~ (filters.domain | urlencode) ~ "&min_score=" ~ (filters.min_score | urlencode) ~ "&max_score=" ~ (filters.max_score | urlencode) ~ "&saved_after=" ~ (filters.saved_after | urlencode) ~ "&saved_before=" ~ (filters.saved_before | urlencode) ~ "&sort=" ~ (filters.sort | urlencode) %}
-          {% if pages.prev is not none %}<a class="btn btn-secondary" href="/ui/prospects?offset={{ pages.prev }}{{ qs }}">Previous</a>{% endif %}
-          {% if pages.next is not none %}<a class="btn btn-secondary" href="/ui/prospects?offset={{ pages.next }}{{ qs }}">Next</a>{% endif %}
+          {% if pages.prev is not none %}<a class="btn btn-secondary btn-sm" href="/ui/prospects?offset={{ pages.prev }}{{ qs }}">Previous</a>{% endif %}
+          {% if pages.next is not none %}<a class="btn btn-secondary btn-sm" href="/ui/prospects?offset={{ pages.next }}{{ qs }}">Next</a>{% endif %}
         </div>
       </nav>
     {% else %}
-      <p class="mt-3 text-sm text-slate-600">{{ pages.total }} saved prospect{{ "" if pages.total == 1 else "s" }}</p>
+      <p class="result-count">{{ pages.total }} saved prospect{{ "" if pages.total == 1 else "s" }}</p>
     {% endif %}
   {% elif filtered %}
-    {% call empty_state("No matching prospects", "No saved prospect matches these filters.") %}<a class="btn btn-secondary" href="/ui/prospects">Clear filters</a>{% endcall %}
+    {% call empty_state("No matching prospects", "No saved prospect matches these filters.", "search") %}<a class="btn btn-secondary" href="/ui/prospects">Clear filters</a>{% endcall %}
   {% else %}
-    {% call empty_state("No saved prospects yet", "Qualify a company in the Explorer and save it once its latest run is qualified.") %}<a class="btn btn-primary" href="/ui/explorer">Open Explorer</a>{% endcall %}
+    {% call empty_state("No saved prospects yet", "Qualify a company in the Explorer and save it once its latest run is qualified.", "prospects") %}<a class="btn btn-primary" href="/ui/explorer">{{ icon("explorer") }}Open Explorer</a>{% endcall %}
   {% endif %}
 </section>

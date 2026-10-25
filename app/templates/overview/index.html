@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header, badge, stat, empty_state, icon with context %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+  {% set attention = drafts_by_state.get("delivery_uncertain", 0) + drafts_by_state.get("sending", 0) %}
+  {% call page_header("Overview", "Where your prospecting and outreach stand right now.", eyebrow="Explee") %}
+    <a class="btn btn-secondary" href="/ui/explorer">{{ icon("search") }}Discover companies</a>
+    <a class="btn btn-primary" href="/ui/campaigns/new">{{ icon("plus") }}New campaign</a>
+  {% endcall %}
+
+  {% if attention %}
+    <div class="alert alert-critical" role="alert">
+      {{ icon("warning") }}
+      <div class="alert-content">
+        <p class="alert-title">{{ attention }} deliver{{ "y needs" if attention == 1 else "ies need" }} a person</p>
+        <p>Delivery is uncertain or was interrupted, so an email may already have been accepted. Check before anything is sent again. <a class="link" href="/ui/drafts?view=attention">Open the attention queue</a>.</p>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="stat-grid">
+    {{ stat("Discovered companies", counts.candidates, "/ui/explorer", "explorer") }}
+    {{ stat("Saved prospects", counts.prospects, "/ui/prospects", "prospects") }}
+    {{ stat("Campaigns", counts.campaigns, "/ui/campaigns", "campaigns") }}
+    {{ stat("Awaiting approval", drafts_by_state.get("pending", 0), "/ui/drafts?view=review", "drafts", "Drafts that need your review") }}
+  </div>
+
+  <div class="layout-main mt-6">
+    <div class="primary">
+      <section class="card" aria-labelledby="queue-heading">
+        <div class="card-header">
+          <div>
+            <h2 id="queue-heading" class="section-title">{{ icon("drafts") }}Drafts awaiting review</h2>
+            <p class="section-help">Newest first. Approval records one recipient; it never sends.</p>
+          </div>
+          <a class="btn btn-ghost btn-sm" href="/ui/drafts?view=review">View all{{ icon("arrow-right") }}</a>
+        </div>
+        {% if review_queue %}
+          <ul class="list-rows px-5 sm:px-6">
+            {% for item in review_queue %}
+              <li class="list-row">
+                <div class="min-w-0">
+                  <a class="link-plain cell-title" href="/ui/drafts/{{ item.draft.id }}">{{ item.draft.subject | truncate(70) }}</a>
+                  <p class="cell-sub">{{ item.prospect_name }} · {{ item.campaign_name }} · revision {{ item.draft.revision }}</p>
+                </div>
+                {{ badge("draft_state", item.draft.state) }}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="card-body text-sm text-muted">No drafts are waiting for review.</p>
+        {% endif %}
+      </section>
+
+      <section class="card" aria-labelledby="recent-heading">
+        <div class="card-header">
+          <div>
+            <h2 id="recent-heading" class="section-title">{{ icon("deliveries") }}Recent delivery activity</h2>
+            <p class="section-help">{{ counts.attempts }} attempt{{ "" if counts.attempts == 1 else "s" }} recorded in the audit trail.</p>
+          </div>
+          <a class="btn btn-ghost btn-sm" href="/ui/deliveries">Delivery history{{ icon("arrow-right") }}</a>
+        </div>
+        {% if recent_attempts %}
+          <ul class="list-rows px-5 sm:px-6">
+            {% for row in recent_attempts %}
+              {% set a = row.attempt %}
+              <li class="list-row">
+                <div class="min-w-0">
+                  <a class="link-plain cell-title" href="/ui/drafts/{{ a.draft_id }}">{{ row.prospect_name }}</a>
+                  <p class="cell-sub tabular-nums">#{{ a.draft_id }} · rev {{ row.draft_revision }} · {{ a.started_at | dt }}</p>
+                </div>
+                <span class="flex flex-wrap items-center gap-2">{{ badge("attempt_mode", a.mode) }} {{ badge("attempt_outcome", a.outcome) }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="card-body text-sm text-muted">No dry runs, sends, or resolutions yet.</p>
+        {% endif %}
+      </section>
+    </div>
+
+    <div class="secondary">
+      <section class="card" aria-labelledby="next-heading">
+        <div class="card-header">
+          <h2 id="next-heading" class="section-title">{{ icon("target") }}Next steps</h2>
+        </div>
+        <div class="p-2 sm:p-3">
+          {% if next_steps %}
+            <ul class="space-y-1">
+              {% for step in next_steps %}
+                <li>
+                  <a class="next-step" href="{{ step.href }}">
+                    {{ icon("warning" if step.tone == "danger" else "arrow-right") }}
+                    <span><span class="block text-sm font-medium {{ 'text-red-800' if step.tone == 'danger' else 'text-ink' }}">{{ step.label }}</span><span class="block text-xs text-muted">{{ step.detail }}</span></span>
+                  </a>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="p-3 text-sm text-muted">Nothing needs your attention right now.</p>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="pipeline-heading">
+        <div class="card-header">
+          <h2 id="pipeline-heading" class="section-title">{{ icon("overview") }}Draft pipeline</h2>
+        </div>
+        <ul class="list-rows px-5 sm:px-6">
+          {% for state, view in [("pending", "review"), ("approved", "approved"), ("sending", "attention"), ("delivery_uncertain", "attention"), ("sent", "sent")] %}
+            <li class="list-row">
+              <a class="link-plain text-sm" href="/ui/drafts?view={{ view }}">{{ badge("draft_state", state) }}</a>
+              <span class="font-semibold tabular-nums text-ink">{{ drafts_by_state.get(state, 0) }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
+
+      <section class="card" aria-labelledby="campaigns-heading">
+        <div class="card-header">
+          <h2 id="campaigns-heading" class="section-title">{{ icon("campaigns") }}Latest campaigns</h2>
+          <a class="btn btn-ghost btn-sm" href="/ui/campaigns">All{{ icon("arrow-right") }}</a>
+        </div>
+        {% if campaigns %}
+          <ul class="list-rows px-5 sm:px-6">
+            {% for c in campaigns %}
+              <li class="list-row">
+                <a class="link-plain min-w-0 truncate text-sm" href="/ui/campaigns/{{ c.id }}">{{ c.name }}</a>
+                <span class="text-xs tabular-nums text-muted">{{ c.prospect_count }} prospect{{ "" if c.prospect_count == 1 else "s" }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="card-body text-sm text-muted">No campaigns yet.</p>
+        {% endif %}
+      </section>
+    </div>
+  </div>
+{% endblock %}

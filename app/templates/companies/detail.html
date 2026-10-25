@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% from "macros.html" import page_header, badge, alert, csrf_input, dl_row, external_link, text_field, form_errors, submit, empty_state with context %}
+{% from "macros.html" import page_header, breadcrumb, badge, alert, csrf_input, dl_row, external_link, text_field, form_errors, submit, icon, score with context %}
 {% block title %}{{ company.name }}{% endblock %}
 {% block content %}
-  <p class="breadcrumb"><a class="link" href="/ui/explorer">Explorer</a> <span aria-hidden="true">/</span> Company</p>
-  {% call page_header(company.name, company.domain or "No domain stored") %}
+  {{ breadcrumb([("Explorer", "/ui/explorer"), (company.name, none)]) }}
+  {% call page_header(company.name, company.domain or "No domain stored", eyebrow="Company") %}
     {{ badge("research_status", company.research_status) }}
     {% if latest %}{{ badge("qualification_status", latest.status) }}{% else %}<span class="badge badge-neutral">Not qualified yet</span>{% endif %}
     {% if saved %}<span class="badge badge-success">Saved prospect</span>{% endif %}
@@ -11,196 +11,230 @@
 
   {% if error %}{{ alert("danger", error, title="That action was not completed") }}{% endif %}
 
-  <div class="grid gap-6 xl:grid-cols-3">
-    <div class="space-y-6 xl:col-span-2">
+  <div class="layout-main">
+    <div class="primary">
 
-      <section class="card p-5" aria-labelledby="overview-heading">
-        <h2 id="overview-heading" class="section-title">Overview and provenance</h2>
-        <dl class="dl mt-3">
-          {% call dl_row("Website") %}{{ external_link(company.website_url) }}{% endcall %}
-          {{ dl_row("Domain", company.domain) }}
-          {% call dl_row("Search snippet") %}
-            {% if company.description %}{{ company.description }}<p class="help">Third-party search text, not verified.</p>{% else %}<span class="text-slate-400">—</span>{% endif %}
-          {% endcall %}
-          {% call dl_row("Discovered by") %}<code>{{ company.discovery.provider }}</code>{% if company.discovery.provider_result_id %} · result <code>{{ company.discovery.provider_result_id }}</code>{% endif %}{% endcall %}
-          {% call dl_row("Source") %}{{ external_link(company.discovery.source_url) }}{% endcall %}
-          {% call dl_row("Discovered at") %}<time datetime="{{ company.discovery.discovered_at.isoformat() }}">{{ company.discovery.discovered_at | dt }}</time>{% endcall %}
-        </dl>
+      <section class="card" aria-labelledby="overview-heading">
+        <div class="card-header">
+          <h2 id="overview-heading" class="section-title">{{ icon("globe") }}Overview and provenance</h2>
+        </div>
+        <div class="card-body pt-2 sm:pt-3">
+          <dl class="dl">
+            {% call dl_row("Website") %}{{ external_link(company.website_url) }}{% endcall %}
+            {{ dl_row("Domain", company.domain) }}
+            {% call dl_row("Search snippet") %}
+              {% if company.description %}{{ company.description }}<p class="help">Third-party search text, not verified.</p>{% else %}<span class="text-subtle">—</span>{% endif %}
+            {% endcall %}
+            {% call dl_row("Discovered by") %}<code>{{ company.discovery.provider }}</code>{% if company.discovery.provider_result_id %} · result <code>{{ company.discovery.provider_result_id }}</code>{% endif %}{% endcall %}
+            {% call dl_row("Source") %}{{ external_link(company.discovery.source_url) }}{% endcall %}
+            {% call dl_row("Discovered at") %}<time datetime="{{ company.discovery.discovered_at.isoformat() }}">{{ company.discovery.discovered_at | dt }}</time>{% endcall %}
+          </dl>
+        </div>
       </section>
 
-      <section class="card p-5" aria-labelledby="research-heading">
-        <div class="flex flex-wrap items-start justify-between gap-3">
+      <section class="card" aria-labelledby="research-heading">
+        <div class="card-header">
           <div>
-            <h2 id="research-heading" class="section-title">Website research</h2>
+            <h2 id="research-heading" class="section-title">{{ icon("document") }}Website research</h2>
             <p class="section-help">{{ status_view("research_status", company.research_status).hint }}</p>
           </div>
           {% if company.website_url %}
             <div class="flex flex-wrap gap-2">
-              <form method="post" action="/ui/companies/{{ company.candidate_id }}/research">
+              <form method="post" hx-disabled-elt="find button[type='submit']" action="/ui/companies/{{ company.candidate_id }}/research">
                 {{ csrf_input() }}
                 <input type="hidden" name="refresh" value="false">
-                {{ submit("Research website" if not attempts else "Research (reuse if fresh)", busy="Fetching…") }}
+                {{ submit("Research website" if not attempts else "Research (reuse if fresh)", busy="Fetching…", size="sm") }}
               </form>
               {% if attempts %}
-                <form method="post" action="/ui/companies/{{ company.candidate_id }}/research">
+                <form method="post" hx-disabled-elt="find button[type='submit']" action="/ui/companies/{{ company.candidate_id }}/research">
                   {{ csrf_input() }}
                   <input type="hidden" name="refresh" value="true">
-                  {{ submit("Refresh now", kind="secondary", busy="Fetching…") }}
+                  {{ submit("Refresh now", kind="secondary", busy="Fetching…", icon_name="refresh", size="sm") }}
                 </form>
               {% endif %}
             </div>
           {% endif %}
         </div>
-        {% if not company.website_url %}
-          {{ alert("info", "This candidate has no stored website, so it cannot be researched. Research only ever fetches the stored website address.") }}
-        {% endif %}
-
-        {% if company.website %}
-          {% set w = company.website %}
-          <dl class="dl mt-4">
-            {% call dl_row("Fetched page") %}{{ external_link(w.final_url or w.requested_url) }}{% endcall %}
-            {{ dl_row("Page title", w.page_title) }}
-            {% call dl_row("Result") %}{{ badge("research_outcome", w.outcome) }}{% if w.http_status %} · HTTP {{ w.http_status }}{% endif %}{% if w.content_truncated %} · content truncated{% endif %}{% endcall %}
-            {% call dl_row("Fetched at") %}<time datetime="{{ w.fetched_at.isoformat() }}">{{ w.fetched_at | dt }}</time> by <code>{{ w.fetcher }}</code>{% endcall %}
-          </dl>
-          {% if w.extracted_text %}
-            <details class="disclosure mt-4">
-              <summary>Extracted page text ({{ w.extracted_text | length }} characters)</summary>
-              <p class="help">Text taken from the company's own page. It is evidence, not verified fact.</p>
-              <pre class="prose-pre">{{ w.extracted_text | truncate(3000) }}</pre>
-            </details>
+        <div class="card-body">
+          {% if not company.website_url %}
+            {{ alert("info", "This candidate has no stored website, so it cannot be researched. Research only ever fetches the stored website address.") }}
           {% endif %}
-        {% endif %}
 
-        <h3 class="subsection-title mt-5">Attempt history</h3>
-        {% if attempts %}
-          <div class="mt-2 overflow-x-auto">
-            <table class="table">
-              <caption class="sr-only">Website research attempts, newest first</caption>
-              <thead><tr><th scope="col">Fetched</th><th scope="col">Outcome</th><th scope="col">Details</th><th scope="col">Fetcher</th></tr></thead>
-              <tbody>
-                {% for a in attempts %}
-                  <tr>
-                    <td><time datetime="{{ a.fetched_at.isoformat() }}">{{ a.fetched_at | dt }}</time></td>
-                    <td>{{ badge("research_outcome", a.outcome) }}</td>
-                    <td>{% if a.failure_category %}{{ failure_text(a.failure_category) }}{% elif a.http_status %}HTTP {{ a.http_status }}{% else %}—{% endif %}</td>
-                    <td><code>{{ a.fetcher }}</code></td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        {% else %}
-          <p class="mt-2 text-sm text-slate-600">No research attempts yet.</p>
-        {% endif %}
+          {% if company.website %}
+            {% set w = company.website %}
+            <dl class="dl -mt-2">
+              {% call dl_row("Fetched page") %}{{ external_link(w.final_url or w.requested_url) }}{% endcall %}
+              {{ dl_row("Page title", w.page_title) }}
+              {% call dl_row("Result") %}{{ badge("research_outcome", w.outcome) }}{% if w.http_status %} <span class="text-muted">· HTTP {{ w.http_status }}</span>{% endif %}{% if w.content_truncated %} <span class="text-muted">· content truncated</span>{% endif %}{% endcall %}
+              {% call dl_row("Fetched at") %}<time datetime="{{ w.fetched_at.isoformat() }}">{{ w.fetched_at | dt }}</time> <span class="text-muted">by</span> <code>{{ w.fetcher }}</code>{% endcall %}
+            </dl>
+            {% if w.extracted_text %}
+              <details class="disclosure mt-4">
+                <summary>{{ icon("chevron-right") }}Extracted page text ({{ w.extracted_text | length }} characters)</summary>
+                <p class="help">Text taken from the company's own page. It is evidence, not verified fact.</p>
+                <pre class="prose-pre">{{ w.extracted_text | truncate(3000) }}</pre>
+              </details>
+            {% endif %}
+          {% endif %}
+
+          <h3 class="subsection-title {{ 'mt-6' if company.website or not company.website_url else '' }}">Attempt history</h3>
+          {% if attempts %}
+            <div class="table-wrap mt-2 shadow-none">
+              <table class="table">
+                <caption class="sr-only">Website research attempts, newest first</caption>
+                <thead><tr><th scope="col">Fetched</th><th scope="col">Outcome</th><th scope="col">Details</th><th scope="col">Fetcher</th></tr></thead>
+                <tbody>
+                  {% for a in attempts %}
+                    <tr>
+                      <td class="whitespace-nowrap tabular-nums"><time datetime="{{ a.fetched_at.isoformat() }}">{{ a.fetched_at | dt }}</time></td>
+                      <td>{{ badge("research_outcome", a.outcome) }}</td>
+                      <td>{% if a.failure_category %}{{ failure_text(a.failure_category) }}{% elif a.http_status %}HTTP {{ a.http_status }}{% else %}—{% endif %}</td>
+                      <td><code>{{ a.fetcher }}</code></td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="mt-2 text-sm text-muted">No research attempts yet.</p>
+          {% endif %}
+        </div>
       </section>
 
-      <section class="card p-5" aria-labelledby="qualification-heading">
-        <h2 id="qualification-heading" class="section-title">Qualification</h2>
-        {% if latest %}
-          <div class="mt-3 flex flex-wrap items-center gap-3">
-            {{ badge("qualification_status", latest.status) }}
-            <span class="text-2xl font-semibold">{{ latest.score }}</span><span class="text-sm text-slate-600">/ 100, threshold {{ latest.threshold }}</span>
-          </div>
-          {% if status_view("qualification_status", latest.status).hint %}
-            <p class="mt-2 text-sm text-slate-700">{{ status_view("qualification_status", latest.status).hint }}</p>
-          {% endif %}
-          <p class="mt-3 text-sm text-slate-800">{{ latest.rationale }}</p>
-          <dl class="dl mt-4">
-            {% call dl_row("Evidence coverage") %}
-              {{ latest.evidence_coverage | percent }} of applicable factor weight was evaluable from sourced data (minimum {{ latest.criteria.min_evidence_coverage | percent }}).
-              {% if latest.evidence_coverage < latest.criteria.min_evidence_coverage %}<p class="field-error">Below the minimum, so the evidence is not sufficient to qualify.</p>{% endif %}
-            {% endcall %}
-            {% call dl_row("Rules") %}<code>{{ latest.rule_version }}</code> · profile <code>{{ latest.criteria.profile }}</code>{% endcall %}
-            {% call dl_row("Based on research") %}{% if latest.research_id %}attempt #{{ latest.research_id }}{% else %}none (discovery data only){% endif %}{% endcall %}
-            {% call dl_row("Qualified at") %}<time datetime="{{ latest.qualified_at.isoformat() }}">{{ latest.qualified_at | dt }}</time>{% endcall %}
-          </dl>
-
-          <h3 class="subsection-title mt-5">Factors and evidence</h3>
-          <ul class="mt-2 space-y-3">
-            {% for f in latest.factors %}
-              <li class="factor">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                  <p class="font-medium">{{ f.label }}</p>
-                  <p class="flex items-center gap-2 text-sm">{{ badge("factor_result", f.result) }} <span>{{ f.points }} / {{ f.weight }} points</span>{% if f.disqualifying %} <span class="badge badge-danger">Disqualifying</span>{% endif %}</p>
-                </div>
-                <p class="mt-1 text-sm text-slate-700">{{ f.explanation }}</p>
-                {% if f.signals_found %}<p class="mt-1 text-xs text-slate-600">Found: {{ f.signals_found | join(", ") }}</p>{% endif %}
-                {% if f.signals_unconfirmed %}<p class="mt-1 text-xs text-amber-800">Only in search data (not counted): {{ f.signals_unconfirmed | join(", ") }}</p>{% endif %}
-                {% if f.signals_not_found %}<p class="mt-1 text-xs text-slate-500">Not found: {{ f.signals_not_found | join(", ") }}</p>{% endif %}
-                {% if f.evidence %}
-                  <details class="disclosure mt-2">
-                    <summary>Evidence ({{ f.evidence | length }})</summary>
-                    <ul class="mt-2 space-y-2">
-                      {% for e in f.evidence %}
-                        <li class="evidence">
-                          <p class="text-xs text-slate-600"><strong>{{ e.signal }}</strong> in <code>{{ e.source }}</code>{% if e.level %} ({{ e.level }}){% endif %}{% if not e.counted %} · not counted{% endif %}</p>
-                          <blockquote class="mt-1 text-sm">“{{ e.excerpt }}”</blockquote>
-                          {% if e.source_url %}<p class="mt-1 text-xs">{{ external_link(e.source_url) }}</p>{% endif %}
-                        </li>
-                      {% endfor %}
-                    </ul>
-                  </details>
-                {% endif %}
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="mt-2 text-sm text-slate-600">Not qualified yet. Research the website first for stronger evidence: without it, matches rest on search-result text and can at most be preliminary.</p>
-        {% endif %}
-
-        <details class="disclosure mt-5" {% if criteria_errors or not latest %}open{% endif %}>
-          <summary>{{ "Qualify again" if latest else "Qualify this company" }}</summary>
-          <form method="post" action="/ui/companies/{{ company.candidate_id }}/qualify" class="mt-3 grid gap-4 sm:grid-cols-2">
-            {{ csrf_input() }}
-            <div class="sm:col-span-2">{{ form_errors(criteria_errors) }}</div>
-            {{ text_field("profile", "Profile label", criteria_form.profile, criteria_errors, required=True) }}
-            {{ text_field("target_keywords", "Target keywords", criteria_form.target_keywords, criteria_errors, required=True, help="Comma-separated, for example: b2b, saas") }}
-            {{ text_field("target_locations", "Target locations", criteria_form.target_locations, criteria_errors, help="Optional, comma-separated") }}
-            {{ text_field("target_tlds", "Target TLDs", criteria_form.target_tlds, criteria_errors, help="Optional, for example: de, at") }}
-            {{ text_field("excluded_keywords", "Excluded keywords", criteria_form.excluded_keywords, criteria_errors, help="Optional, comma-separated") }}
-            {{ text_field("threshold", "Threshold (1–100)", criteria_form.threshold, criteria_errors, type="number", required=True, attrs='min="1" max="100"') }}
-            {{ text_field("min_evidence_coverage", "Minimum evidence coverage (0–1)", criteria_form.min_evidence_coverage, criteria_errors, type="number", required=True, attrs='min="0.01" max="1" step="0.01"') }}
-            <div class="sm:col-span-2">
-              <p class="help mb-3">Runs the deterministic qualification rules on stored data only; nothing is fetched. Each run is recorded and earlier runs are kept.</p>
-              {{ submit("Run qualification", busy="Qualifying…") }}
+      <section class="card" aria-labelledby="qualification-heading">
+        <div class="card-header">
+          <h2 id="qualification-heading" class="section-title">{{ icon("target") }}Qualification</h2>
+          {% if latest %}<span class="text-xs text-muted">{{ total_runs }} run{{ "" if total_runs == 1 else "s" }} recorded</span>{% endif %}
+        </div>
+        <div class="card-body">
+          {% if latest %}
+            <div class="flex flex-wrap items-center gap-x-5 gap-y-3">
+              <div>
+                <p class="text-xs font-medium uppercase tracking-wide text-muted">Score</p>
+                <p class="mt-0.5 tabular-nums"><span class="text-3xl font-semibold tracking-tight text-ink">{{ latest.score }}</span><span class="text-sm text-muted"> / 100, threshold {{ latest.threshold }}</span></p>
+              </div>
+              <div class="flex flex-col gap-1">
+                {{ badge("qualification_status", latest.status) }}
+              </div>
             </div>
-          </form>
-        </details>
+            {% if status_view("qualification_status", latest.status).hint %}
+              <p class="mt-3 text-sm text-ink-soft">{{ status_view("qualification_status", latest.status).hint }}</p>
+            {% endif %}
+            <p class="mt-3 rounded-control bg-sunken p-3 text-sm leading-6 text-ink">{{ latest.rationale }}</p>
+            <dl class="dl mt-3">
+              {% call dl_row("Evidence coverage") %}
+                {{ latest.evidence_coverage | percent }} of applicable factor weight was evaluable from sourced data (minimum {{ latest.criteria.min_evidence_coverage | percent }}).
+                {% if latest.evidence_coverage < latest.criteria.min_evidence_coverage %}<p class="field-error">Below the minimum, so the evidence is not sufficient to qualify.</p>{% endif %}
+              {% endcall %}
+              {% call dl_row("Rules") %}<code>{{ latest.rule_version }}</code> · profile <code>{{ latest.criteria.profile }}</code>{% endcall %}
+              {% call dl_row("Based on research") %}{% if latest.research_id %}attempt #{{ latest.research_id }}{% else %}none (discovery data only){% endif %}{% endcall %}
+              {% call dl_row("Qualified at") %}<time datetime="{{ latest.qualified_at.isoformat() }}">{{ latest.qualified_at | dt }}</time>{% endcall %}
+            </dl>
 
-        {% if history | length > 1 %}
-          <h3 class="subsection-title mt-5">Earlier runs</h3>
-          <ul class="mt-2 divide-y divide-slate-200 text-sm">
-            {% for run in history[1:] %}
-              <li class="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span>{{ badge("qualification_status", run.status) }} {{ run.score }}/100 · <code>{{ run.rule_version }}</code></span>
-                <time datetime="{{ run.qualified_at.isoformat() }}" class="text-slate-600">{{ run.qualified_at | dt }}</time>
-              </li>
-            {% endfor %}
-          </ul>
-          {% if total_runs > history | length %}<p class="help">{{ total_runs }} runs stored; showing the latest {{ history | length }}.</p>{% endif %}
-        {% endif %}
+            <h3 class="subsection-title mt-6">Factors and evidence</h3>
+            <ul class="mt-3 space-y-3">
+              {% for f in latest.factors %}
+                <li class="factor">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <p class="font-medium text-ink">{{ f.label }}</p>
+                    <p class="flex items-center gap-2 text-sm">{{ badge("factor_result", f.result) }} <span class="tabular-nums text-muted">{{ f.points }} / {{ f.weight }} points</span>{% if f.disqualifying %} <span class="badge badge-danger">Disqualifying</span>{% endif %}</p>
+                  </div>
+                  <p class="mt-1.5 text-sm text-ink-soft">{{ f.explanation }}</p>
+                  {% if f.signals_found %}<p class="mt-1.5 text-xs text-muted"><span class="font-semibold text-emerald-800">Found:</span> {{ f.signals_found | join(", ") }}</p>{% endif %}
+                  {% if f.signals_unconfirmed %}<p class="mt-1 text-xs text-amber-800"><span class="font-semibold">Only in search data (not counted):</span> {{ f.signals_unconfirmed | join(", ") }}</p>{% endif %}
+                  {% if f.signals_not_found %}<p class="mt-1 text-xs text-muted"><span class="font-semibold">Not found:</span> {{ f.signals_not_found | join(", ") }}</p>{% endif %}
+                  {% if f.evidence %}
+                    <details class="disclosure mt-3">
+                      <summary>{{ icon("chevron-right") }}Evidence ({{ f.evidence | length }})</summary>
+                      <ul class="mt-2 space-y-2">
+                        {% for e in f.evidence %}
+                          <li class="evidence">
+                            <p class="text-xs text-muted"><strong class="text-ink-soft">{{ e.signal }}</strong> in <code>{{ e.source }}</code>{% if e.level %} ({{ e.level }}){% endif %}{% if not e.counted %} · not counted{% endif %}</p>
+                            <blockquote class="mt-1.5 text-sm">“{{ e.excerpt }}”</blockquote>
+                            {% if e.source_url %}<p class="mt-1.5 text-xs">{{ external_link(e.source_url) }}</p>{% endif %}
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    </details>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="text-sm text-ink-soft">Not qualified yet. Research the website first for stronger evidence: without it, matches rest on search-result text and can at most be preliminary.</p>
+          {% endif %}
+
+          <details class="disclosure mt-6 rounded-card border border-line p-4" {% if criteria_errors or not latest %}open{% endif %}>
+            <summary>{{ icon("chevron-right") }}{{ "Qualify again" if latest else "Qualify this company" }}</summary>
+            <form method="post" hx-disabled-elt="find button[type='submit']" action="/ui/companies/{{ company.candidate_id }}/qualify" class="form-grid mt-4">
+              {{ csrf_input() }}
+              <div class="sm:col-span-2">{{ form_errors(criteria_errors) }}</div>
+              {{ text_field("profile", "Profile label", criteria_form.profile, criteria_errors, required=True) }}
+              {{ text_field("target_keywords", "Target keywords", criteria_form.target_keywords, criteria_errors, required=True, help="Comma-separated, for example: b2b, saas") }}
+              {{ text_field("target_locations", "Target locations", criteria_form.target_locations, criteria_errors, help="Optional, comma-separated") }}
+              {{ text_field("target_tlds", "Target TLDs", criteria_form.target_tlds, criteria_errors, help="Optional, for example: de, at") }}
+              {{ text_field("excluded_keywords", "Excluded keywords", criteria_form.excluded_keywords, criteria_errors, help="Optional, comma-separated") }}
+              {{ text_field("threshold", "Threshold (1–100)", criteria_form.threshold, criteria_errors, type="number", required=True, attrs='min="1" max="100"') }}
+              {{ text_field("min_evidence_coverage", "Minimum evidence coverage (0–1)", criteria_form.min_evidence_coverage, criteria_errors, type="number", required=True, attrs='min="0.01" max="1" step="0.01"') }}
+              <div class="form-actions sm:col-span-2">
+                {{ submit("Run qualification", busy="Qualifying…") }}
+                <p class="help mt-0">Runs the deterministic rules on stored data only; nothing is fetched. Earlier runs are kept.</p>
+              </div>
+            </form>
+          </details>
+
+          {% if history | length > 1 %}
+            <h3 class="subsection-title mt-6">Earlier runs</h3>
+            <ul class="list-rows mt-1 text-sm">
+              {% for run in history[1:] %}
+                <li class="list-row">
+                  <span class="flex flex-wrap items-center gap-2">{{ badge("qualification_status", run.status) }} {{ score(run.score, 100) }} <code>{{ run.rule_version }}</code></span>
+                  <time datetime="{{ run.qualified_at.isoformat() }}" class="tabular-nums text-muted">{{ run.qualified_at | dt }}</time>
+                </li>
+              {% endfor %}
+            </ul>
+            {% if total_runs > history | length %}<p class="help">{{ total_runs }} runs stored; showing the latest {{ history | length }}.</p>{% endif %}
+          {% endif %}
+        </div>
       </section>
     </div>
 
-    <aside class="space-y-6" aria-label="Save">
-      <section class="card p-5" aria-labelledby="save-heading">
-        <h2 id="save-heading" class="section-title">Saved prospect</h2>
-        {% if saved %}
-          <p class="mt-2 text-sm text-slate-700">Saved on {{ saved.saved_at | dt }}.</p>
-          <a class="btn btn-secondary mt-3" href="/ui/prospects/{{ saved.id }}">Open saved prospect</a>
-        {% elif latest and latest.status == "qualified" %}
-          <p class="mt-2 text-sm text-slate-700">The latest qualification is <strong>qualified</strong>. The server re-checks eligibility when you save.</p>
-          <form method="post" action="/ui/companies/{{ company.candidate_id }}/save" class="mt-3">
-            {{ csrf_input() }}
-            {{ submit("Save as prospect", busy="Saving…") }}
-          </form>
-        {% elif latest %}
-          <p class="mt-2 text-sm text-slate-700">Only companies whose latest qualification is <strong>qualified</strong> can be saved. This one is “{{ status_view("qualification_status", latest.status).label }}”.</p>
-          {% if latest.status == "preliminary" %}<p class="help">Research the website, then qualify again to confirm the match.</p>{% endif %}
-        {% else %}
-          <p class="mt-2 text-sm text-slate-700">Qualify the company first. Only qualified companies can be saved.</p>
-        {% endif %}
+    <aside class="secondary" aria-label="Save and progress">
+      <section class="card" aria-labelledby="save-heading">
+        <div class="card-header">
+          <h2 id="save-heading" class="section-title">{{ icon("prospects") }}Saved prospect</h2>
+        </div>
+        <div class="card-body">
+          {% if saved %}
+            <p class="text-sm text-ink-soft">Saved on {{ saved.saved_at | dt }}.</p>
+            <a class="btn btn-secondary mt-4" href="/ui/prospects/{{ saved.id }}">Open saved prospect{{ icon("arrow-right") }}</a>
+          {% elif latest and latest.status == "qualified" %}
+            <p class="text-sm text-ink-soft">The latest qualification is <strong>qualified</strong>. The server re-checks eligibility when you save.</p>
+            <form method="post" hx-disabled-elt="find button[type='submit']" action="/ui/companies/{{ company.candidate_id }}/save" class="mt-4">
+              {{ csrf_input() }}
+              {{ submit("Save as prospect", busy="Saving…", icon_name="plus") }}
+            </form>
+          {% elif latest %}
+            <p class="text-sm text-ink-soft">Only companies whose latest qualification is <strong>qualified</strong> can be saved. This one is “{{ status_view("qualification_status", latest.status).label }}”.</p>
+            {% if latest.status == "preliminary" %}<p class="help">Research the website, then qualify again to confirm the match.</p>{% endif %}
+          {% else %}
+            <p class="text-sm text-ink-soft">Qualify the company first. Only qualified companies can be saved.</p>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="progress-heading">
+        <div class="card-header">
+          <h2 id="progress-heading" class="section-title">Progress</h2>
+        </div>
+        <ol class="card-body space-y-3 text-sm">
+          {% set researched = company.research_status in ("available", "partial") %}
+          {% set qualified = latest is not none and latest.status == "qualified" %}
+          <li class="flex items-start gap-3"><span class="step step-done">{{ icon("check", "h-3.5 w-3.5") }}</span><span><span class="font-medium text-ink">Discovered</span><span class="block text-xs text-muted">{{ company.discovery.discovered_at | dt }}</span></span></li>
+          <li class="flex items-start gap-3"><span class="step {{ 'step-done' if researched else '' }}">{% if researched %}{{ icon("check", "h-3.5 w-3.5") }}{% else %}2{% endif %}</span><span><span class="font-medium text-ink">Website researched</span><span class="block text-xs text-muted">{{ status_view("research_status", company.research_status).label }}</span></span></li>
+          <li class="flex items-start gap-3"><span class="step {{ 'step-done' if qualified else '' }}">{% if qualified %}{{ icon("check", "h-3.5 w-3.5") }}{% else %}3{% endif %}</span><span><span class="font-medium text-ink">Qualified</span><span class="block text-xs text-muted">{% if latest %}{{ status_view("qualification_status", latest.status).label }}{% else %}Not run yet{% endif %}</span></span></li>
+          <li class="flex items-start gap-3"><span class="step {{ 'step-done' if saved else '' }}">{% if saved %}{{ icon("check", "h-3.5 w-3.5") }}{% else %}4{% endif %}</span><span><span class="font-medium text-ink">Saved as prospect</span><span class="block text-xs text-muted">{{ "Yes" if saved else "Not yet" }}</span></span></li>
+        </ol>
       </section>
     </aside>
   </div>

@@ -572,3 +572,38 @@ async def test_fragments_skip_the_attention_count(
         assert calls == []
         await ui.get(f"/ui/drafts/{draft_id}")
     assert calls == [f"/ui/drafts/{draft_id}"]
+
+
+# -- Phase 7: overview --------------------------------------------------------------------
+async def test_overview_shows_real_counts_queue_and_next_steps(
+    ui_factory: Any, draft_id: int, db_session_factory: sessionmaker[Session]
+) -> None:
+    draft = _draft(db_session_factory, draft_id)
+    async with ui_factory() as ui:
+        page = await ui.get("/ui/overview")
+        root = await ui.get("/ui/")
+
+    html = page.text
+    assert page.status_code == 200
+    assert root.headers["location"] == "/ui/overview"
+    assert 'href="/ui/overview" class="nav-link nav-link-active" aria-current="page"' in html
+    assert draft.subject in html  # in the review queue
+    assert "Review 1 draft awaiting approval" in html
+    assert "needs a person" not in html
+    assert "No dry runs, sends, or resolutions yet." in html
+    assert "Q4 fleet operators" in html  # latest campaigns
+
+
+async def test_overview_flags_uncertain_deliveries_first(
+    ui_factory: Any, draft_id: int
+) -> None:
+    provider = FakeEmailProvider(delivers_email=True, error=EmailDeliveryUncertainError("?"))
+    async with ui_factory(mailer=provider, **LIVE) as ui:
+        await _approve(ui, draft_id)
+        await ui.post(f"/ui/drafts/{draft_id}/send", DELIVER)
+        page = await ui.get("/ui/overview")
+
+    html = page.text
+    assert "1 delivery needs a person" in html
+    assert "Resolve 1 delivery needing attention" in html
+    assert "Uncertain" in html  # recent activity shows the outcome

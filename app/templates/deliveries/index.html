@@ -1,38 +1,42 @@
 {% extends "base.html" %}
-{% from "macros.html" import page_header with context %}
+{% from "macros.html" import page_header, icon with context %}
 {% block title %}Delivery history{% endblock %}
 {% block content %}
-  {{ page_header("Delivery history", "Every dry run, real send, and manual resolution, as recorded in the audit trail.") }}
+  {{ page_header("Delivery history", "Every dry run, real send, and manual resolution, as recorded in the audit trail.", eyebrow="Outreach") }}
 
-  <details class="disclosure card p-4">
-    <summary>What the outcomes mean</summary>
-    <dl class="mt-3 grid gap-2 text-sm md:grid-cols-2">
-      <div><dt class="font-medium">Dry run (simulated)</dt><dd class="text-slate-700">Recorded only. No mail server was contacted and nothing was sent.</dd></div>
-      <div><dt class="font-medium">Sent</dt><dd class="text-slate-700">The mail server accepted the message. That does not guarantee inbox placement.</dd></div>
-      <div><dt class="font-medium">Failed</dt><dd class="text-slate-700">Nothing was delivered. The draft can be sent again.</dd></div>
-      <div><dt class="font-medium">Uncertain</dt><dd class="text-slate-700">The connection failed after the message was transmitted, so it may have been accepted. Email cannot guarantee exactly-once delivery, so a person must check before anything is sent again.</dd></div>
-      <div><dt class="font-medium">Manual resolution</dt><dd class="text-slate-700">An operator checked the mailbox or server logs and recorded the verified result.</dd></div>
-      <div><dt class="font-medium">In progress</dt><dd class="text-slate-700">A send is running now, or was interrupted and is waiting for a person.</dd></div>
-    </dl>
-  </details>
-
-  <form method="get" action="/ui/deliveries" class="card mt-4 grid gap-4 p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end" role="search"
+  <form method="get" hx-disabled-elt="find button[type='submit']" action="/ui/deliveries" class="toolbar" role="search" aria-label="Filter delivery attempts"
         hx-get="/ui/deliveries" hx-target="#delivery-results" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change, submit">
-    <div>
-      <label for="outcome" class="label">Outcome</label>
-      <select id="outcome" name="outcome" class="input">
-        <option value="">Any outcome</option>
-        {% for value in outcomes %}<option value="{{ value }}" {% if value == outcome %}selected{% endif %}>{{ status_view("attempt_outcome", value).label }}</option>{% endfor %}
-      </select>
+    <div class="grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+      <div>
+        <label for="outcome" class="label">Outcome</label>
+        <select id="outcome" name="outcome" class="input">
+          <option value="">Any outcome</option>
+          {% for value in outcomes %}<option value="{{ value }}" {% if value == outcome %}selected{% endif %}>{{ status_view("attempt_outcome", value).label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="mode" class="label">Mode</label>
+        <select id="mode" name="mode" class="input">
+          <option value="">Any mode</option>
+          {% for value in modes %}<option value="{{ value }}" {% if value == mode %}selected{% endif %}>{{ status_view("attempt_mode", value).label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="flex items-center gap-2">
+        <button type="submit" class="btn btn-secondary">Filter</button>
+        <a class="btn btn-ghost" href="/ui/deliveries">Reset</a>
+      </div>
     </div>
-    <div>
-      <label for="mode" class="label">Mode</label>
-      <select id="mode" name="mode" class="input">
-        <option value="">Any mode</option>
-        {% for value in modes %}<option value="{{ value }}" {% if value == mode %}selected{% endif %}>{{ status_view("attempt_mode", value).label }}</option>{% endfor %}
-      </select>
-    </div>
-    <button type="submit" class="btn btn-secondary">Filter</button>
+    <details class="disclosure mt-4 border-t border-line pt-4">
+      <summary>{{ icon("chevron-right") }}What the outcomes mean</summary>
+      <dl class="mt-3 grid gap-3 text-sm md:grid-cols-2">
+        <div><dt class="font-medium text-ink">Dry run (simulated)</dt><dd class="text-ink-soft">Recorded only. No mail server was contacted and nothing was sent.</dd></div>
+        <div><dt class="font-medium text-ink">Sent</dt><dd class="text-ink-soft">The mail server accepted the message. That does not guarantee inbox placement.</dd></div>
+        <div><dt class="font-medium text-ink">Failed</dt><dd class="text-ink-soft">Nothing was delivered. The draft can be sent again.</dd></div>
+        <div><dt class="font-medium text-red-800">Uncertain</dt><dd class="text-ink-soft">The connection failed after the message was transmitted, so it may have been accepted. Email cannot guarantee exactly-once delivery, so a person must check before anything is sent again.</dd></div>
+        <div><dt class="font-medium text-ink">Manual resolution</dt><dd class="text-ink-soft">An operator checked the mailbox or server logs and recorded the verified result.</dd></div>
+        <div><dt class="font-medium text-ink">In progress</dt><dd class="text-ink-soft">A send is running now, or was interrupted and is waiting for a person.</dd></div>
+      </dl>
+    </details>
   </form>
 
   {% include "deliveries/_results.html" %}

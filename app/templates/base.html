@@ -1,10 +1,11 @@
-{% from "macros.html" import nav_link, alert with context %}
+{% from "macros.html" import nav_link, alert, icon with context %}
 <!doctype html>
-<html lang="en" class="h-full bg-slate-50">
+<html lang="en" class="h-full">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="color-scheme" content="light">
   {# No eval, no inline scripts, same-origin requests only, no page snapshots in
      localStorage, and error responses are swapped in so they are visible. #}
   <meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"selfRequestsOnly":true,"historyCacheSize":0,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
@@ -12,35 +13,40 @@
   <link rel="stylesheet" href="{{ asset_urls['css/app.css'] }}">
   <script src="{{ asset_urls['vendor/htmx.min.js'] }}" defer></script>
 </head>
-<body class="h-full text-slate-900 antialiased"
+<body class="h-full"
       hx-boost="true"
-      hx-headers='{"{{ csrf_header }}": "{{ csrf_token }}"}'
-      hx-disabled-elt="find button[type='submit']">
+      hx-headers='{"{{ csrf_header }}": "{{ csrf_token }}"}'>
   <a href="#main" class="skip-link">Skip to main content</a>
-  <div class="min-h-full lg:flex">
+  {# Shown while any HTMX request (except background polling) is in flight. #}
+  <div class="progress" aria-hidden="true"><span class="progress-bar"></span></div>
+
+  <div class="shell">
     <aside class="sidebar" aria-label="Primary">
-      <div class="flex items-center justify-between gap-3 px-4 py-4 lg:px-5">
-        <a href="/ui/explorer" class="brand">
-          <span class="brand-mark" aria-hidden="true">E</span>
+      <div class="sidebar-head">
+        <a href="/ui/overview" class="brand">
+          <span class="brand-mark">{{ icon("logo") }}</span>
           <span>Explee</span>
         </a>
-        <span class="text-xs text-slate-400">v{{ version }}</span>
+        <span class="brand-tag">v{{ version }}</span>
       </div>
-      <nav class="nav">
+      <nav class="nav" aria-label="Main navigation">
+        <ul class="nav-group">
+          {{ nav_link("/ui/overview", "Overview", nav == "overview", "overview") }}
+        </ul>
         <p class="nav-heading">Prospecting</p>
         <ul class="nav-group">
-          {{ nav_link("/ui/explorer", "Explorer", nav == "explorer") }}
-          {{ nav_link("/ui/prospects", "Saved prospects", nav == "prospects") }}
+          {{ nav_link("/ui/explorer", "Explorer", nav == "explorer", "explorer") }}
+          {{ nav_link("/ui/prospects", "Saved prospects", nav == "prospects", "prospects") }}
         </ul>
-        <p class="nav-heading lg:mt-5">Outreach</p>
+        <p class="nav-heading">Outreach</p>
         <ul class="nav-group">
-          {{ nav_link("/ui/campaigns", "Campaigns", nav == "campaigns") }}
-          {{ nav_link("/ui/drafts", "Draft review", nav == "drafts", attention_count) }}
-          {{ nav_link("/ui/deliveries", "Delivery history", nav == "deliveries") }}
+          {{ nav_link("/ui/campaigns", "Campaigns", nav == "campaigns", "campaigns") }}
+          {{ nav_link("/ui/drafts", "Draft review", nav == "drafts", "drafts", attention_count) }}
+          {{ nav_link("/ui/deliveries", "Delivery history", nav == "deliveries", "deliveries") }}
         </ul>
-        <p class="nav-heading lg:mt-5">Settings</p>
+        <p class="nav-heading">System</p>
         <ul class="nav-group">
-          {{ nav_link("/ui/system", "System status", nav == "system") }}
+          {{ nav_link("/ui/system", "System status", nav == "system", "system") }}
         </ul>
       </nav>
       <div class="sidebar-footer">
@@ -48,16 +54,18 @@
       </div>
     </aside>
 
-    <div class="flex min-w-0 flex-1 flex-col">
+    <div class="main-column">
       <header class="topbar">
-        <div class="mode-chip {{ 'mode-chip-live' if delivery_mode.real_enabled else 'mode-chip-safe' }}" role="status">
-          {% if delivery_mode.real_enabled %}
-            <span aria-hidden="true">●</span> Email: real delivery enabled
-          {% else %}
-            <span aria-hidden="true">○</span> Email: dry-run only, nothing is sent
-          {% endif %}
-        </div>
-        <span class="htmx-indicator loading-chip" id="page-loading" role="status">Working…</span>
+        {% if delivery_mode.real_enabled %}
+          <div class="mode-chip mode-chip-live" role="status">
+            {{ icon("send") }}<span>Email: real delivery enabled</span>
+          </div>
+        {% else %}
+          <div class="mode-chip mode-chip-safe" role="status">
+            {{ icon("shield") }}<span>Email: dry-run only, nothing is sent</span>
+          </div>
+        {% endif %}
+        <span class="htmx-indicator loading-chip" id="page-loading" role="status"><span class="spinner"></span>Working…</span>
       </header>
 
       <main id="main" class="page" tabindex="-1">

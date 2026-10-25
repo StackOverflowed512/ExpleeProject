@@ -1,54 +1,95 @@
 {% extends "base.html" %}
-{% from "macros.html" import page_header, dl_row, alert with context %}
+{% from "macros.html" import page_header, dl_row, alert, icon with context %}
 {% block title %}System status{% endblock %}
 {% block content %}
-  {{ page_header("System status", "Read-only configuration summary. Secrets are never shown, only whether they are set. Change settings in .env and restart.") }}
+  {# A service status pill: tone + text label (never color alone). #}
+  {% macro state(tone, label) %}<span class="badge badge-{{ tone }}">{{ label }}</span>{% endmacro %}
+  {{ page_header("System status", "Read-only configuration summary. Secrets are never shown, only whether they are set. Change settings in .env and restart.", eyebrow="System") }}
 
   {{ alert("warning", "Explee has no sign-in and is meant for one person on their own computer. Do not expose it to an untrusted network.", title="No authentication") }}
 
-  <div class="mt-6 grid gap-6 lg:grid-cols-2">
-    <section class="card p-5" aria-labelledby="app-heading">
-      <h2 id="app-heading" class="section-title">Application and database</h2>
-      <dl class="dl mt-3">
-        {% call dl_row("Status") %}<span class="badge badge-success">{{ health.status }}</span> · {{ health.service }} v{{ health.version }} · {{ health.environment }}{% endcall %}
-        {% call dl_row("Database") %}
-          {% if db_reachable %}<span class="badge badge-success">Reachable</span>{% else %}<span class="badge badge-danger">Unreachable</span><p class="help">Check DATABASE_URL and that PostgreSQL is running.</p>{% endif %}
-        {% endcall %}
-        {% call dl_row("Migration") %}
-          {% if db_revision %}<code>{{ db_revision }}</code>{% else %}<span class="text-slate-600">Unknown or not migrated</span>{% endif %}
-          {% if expected_head %}
-            {% if migrations_current %} <span class="badge badge-success">Up to date</span>{% else %} <span class="badge badge-warning">Expected {{ expected_head }}</span><p class="help">Run <code>alembic upgrade head</code>.</p>{% endif %}
-          {% endif %}
-        {% endcall %}
-      </dl>
-    </section>
+  {# Derived states, from real checks only. #}
+  {% if not db_reachable %}{% set db_state = ("danger", "Unavailable") %}
+  {% elif expected_head and not migrations_current %}{% set db_state = ("warning", "Degraded: migrations pending") %}
+  {% else %}{% set db_state = ("success", "Healthy") %}{% endif %}
+  {% if config.search_provider == "fake" %}{% set search_state = ("neutral", "Offline (fake)") %}
+  {% elif tavily_key_set %}{% set search_state = ("success", "Configured") %}
+  {% else %}{% set search_state = ("danger", "Not configured") %}{% endif %}
+  {% if config.draft_generator == "fake" %}{% set drafts_state = ("neutral", "Offline (fake)") %}
+  {% elif mistral_key_set %}{% set drafts_state = ("success", "Configured") %}
+  {% else %}{% set drafts_state = ("danger", "Not configured") %}{% endif %}
+  {% set fetch_state = ("neutral", "Offline (fake)") if config.website_fetcher == "fake" else ("success", "Configured") %}
+  {% set email_state = ("warning", "Real delivery") if mode.real_enabled else ("neutral", "Dry run only") %}
 
-    <section class="card p-5" aria-labelledby="email-heading">
-      <h2 id="email-heading" class="section-title">Email delivery</h2>
-      <div class="mode-box {{ 'mode-box-live' if mode.real_enabled else 'mode-box-safe' }} mt-3">
-        <p class="font-semibold">{{ mode.title }}</p>
-        <p class="mt-1 text-sm">{{ mode.explanation }}</p>
-        {% if mode.blockers %}<ul class="mt-2 list-disc pl-5 text-sm">{% for reason in mode.blockers %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+  <div class="grid gap-6 lg:grid-cols-2">
+    <section class="card" aria-labelledby="app-heading">
+      <div class="card-header">
+        <h2 id="app-heading" class="section-title">{{ icon("database") }}Application and database</h2>
+        {{ state(*db_state) }}
       </div>
-      <dl class="dl mt-3">
-        {% call dl_row("Provider") %}<code>{{ config.email_provider }}</code>{% endcall %}
-        {{ dl_row("Dry-run only", "Yes" if config.email_dry_run else "No") }}
-        {{ dl_row("Sender", config.email_sender or "Not configured") }}
-        {% if config.email_provider == "smtp" %}
-          {{ dl_row("SMTP server", (config.smtp_host or "Not configured") ~ ":" ~ config.smtp_port ~ " (" ~ config.smtp_security ~ ")") }}
-          {{ dl_row("SMTP login", "Configured" if smtp_login_set else "None") }}
-        {% endif %}
-        {{ dl_row("Approval label", config.approval_actor) }}
-      </dl>
+      <div class="card-body pt-2 sm:pt-3">
+        <dl class="dl">
+          {% call dl_row("Application") %}{{ state("success", "Healthy") }} <span class="text-muted">· {{ health.service }} v{{ health.version }} · {{ health.environment }}</span>{% endcall %}
+          {% call dl_row("Database") %}
+            {% if db_reachable %}{{ state("success", "Reachable") }}{% else %}{{ state("danger", "Unreachable") }}<p class="help">Check DATABASE_URL and that PostgreSQL is running.</p>{% endif %}
+          {% endcall %}
+          {% call dl_row("Migration") %}
+            {% if db_revision %}<code>{{ db_revision }}</code>{% else %}<span class="text-muted">Unknown or not migrated</span>{% endif %}
+            {% if expected_head %}
+              {% if migrations_current %} {{ state("success", "Up to date") }}{% else %} {{ state("warning", "Expected " ~ expected_head) }}<p class="help">Run <code>alembic upgrade head</code>.</p>{% endif %}
+            {% endif %}
+          {% endcall %}
+        </dl>
+      </div>
     </section>
 
-    <section class="card p-5" aria-labelledby="providers-heading">
-      <h2 id="providers-heading" class="section-title">Providers</h2>
-      <dl class="dl mt-3">
-        {% call dl_row("Search") %}<code>{{ config.search_provider }}</code>{% if config.search_provider == "tavily" %} · API key {{ "set" if tavily_key_set else "missing" }}{% endif %}{% endcall %}
-        {% call dl_row("Website fetcher") %}<code>{{ config.website_fetcher }}</code> · research reused for {{ config.research_freshness_hours }} h{% endcall %}
-        {% call dl_row("Draft generator") %}<code>{{ config.draft_generator }}</code>{% if config.draft_generator == "mistral" %} · model <code>{{ config.mistral_model }}</code> · API key {{ "set" if mistral_key_set else "missing" }}{% endif %}{% endcall %}
-      </dl>
+    <section class="card" aria-labelledby="email-heading">
+      <div class="card-header">
+        <h2 id="email-heading" class="section-title">{{ icon("mail") }}Email delivery</h2>
+        {{ state(*email_state) }}
+      </div>
+      <div class="card-body space-y-3">
+        <div class="mode-box {{ 'mode-box-live' if mode.real_enabled else 'mode-box-safe' }}">
+          {{ icon("send" if mode.real_enabled else "shield") }}
+          <div>
+            <p class="font-semibold">{{ mode.title }}</p>
+            <p class="mt-1">{{ mode.explanation }}</p>
+            {% if mode.blockers %}<ul class="mt-2 list-disc space-y-0.5 pl-5">{% for reason in mode.blockers %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+          </div>
+        </div>
+        <dl class="dl">
+          {% call dl_row("Provider") %}<code>{{ config.email_provider }}</code>{% endcall %}
+          {{ dl_row("Dry-run only", "Yes" if config.email_dry_run else "No") }}
+          {{ dl_row("Sender", config.email_sender or "Not configured") }}
+          {% if config.email_provider == "smtp" %}
+            {{ dl_row("SMTP server", (config.smtp_host or "Not configured") ~ ":" ~ config.smtp_port ~ " (" ~ config.smtp_security ~ ")") }}
+            {{ dl_row("SMTP login", "Configured" if smtp_login_set else "None") }}
+          {% endif %}
+          {{ dl_row("Approval label", config.approval_actor) }}
+        </dl>
+      </div>
+    </section>
+
+    <section class="card lg:col-span-2" aria-labelledby="providers-heading">
+      <div class="card-header">
+        <h2 id="providers-heading" class="section-title">{{ icon("plug") }}Providers</h2>
+      </div>
+      <ul class="grid divide-y divide-line md:grid-cols-3 md:divide-x md:divide-y-0">
+        <li class="p-5 sm:p-6">
+          <div class="flex items-center justify-between gap-2"><p class="font-medium text-ink">Search</p>{{ state(*search_state) }}</div>
+          <p class="mt-2 text-sm text-muted"><code>{{ config.search_provider }}</code>{% if config.search_provider == "tavily" %} · API key {{ "set" if tavily_key_set else "missing" }}{% endif %}</p>
+          {% if search_state[0] == "danger" %}<p class="help">Set <code>TAVILY_API_KEY</code> in <code>.env</code> and restart.</p>{% elif config.search_provider == "fake" %}<p class="help">Searches return no results. Use <code>SEARCH_PROVIDER=tavily</code> for real searches.</p>{% endif %}
+        </li>
+        <li class="p-5 sm:p-6">
+          <div class="flex items-center justify-between gap-2"><p class="font-medium text-ink">Website fetcher</p>{{ state(*fetch_state) }}</div>
+          <p class="mt-2 text-sm text-muted"><code>{{ config.website_fetcher }}</code> · research reused for {{ config.research_freshness_hours }} h</p>
+        </li>
+        <li class="p-5 sm:p-6">
+          <div class="flex items-center justify-between gap-2"><p class="font-medium text-ink">Draft generator</p>{{ state(*drafts_state) }}</div>
+          <p class="mt-2 text-sm text-muted"><code>{{ config.draft_generator }}</code>{% if config.draft_generator == "mistral" %} · model <code>{{ config.mistral_model }}</code> · API key {{ "set" if mistral_key_set else "missing" }}{% endif %}</p>
+          {% if drafts_state[0] == "danger" %}<p class="help">Set <code>MISTRAL_API_KEY</code> in <code>.env</code> and restart.</p>{% endif %}
+        </li>
+      </ul>
     </section>
   </div>
 {% endblock %}
